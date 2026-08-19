@@ -14,25 +14,39 @@ import {
   DEFAULT_MAX_TOKENS,
 } from "./client.js";
 
+export interface StreamMessageOptions {
+  signal?: AbortSignal;
+  systemPrompt?: string;
+  tools?: Array<{
+    name: string;
+    description: string;
+    input_schema: Record<string, unknown>;
+  }>;
+}
+
 export async function* streamMessage(
   messages: Message[],
-  signal?: AbortSignal,
-  systemPrompt?: string
+  options: StreamMessageOptions = {}
 ): AsyncGenerator<StreamEvent, StreamResult> {
+  const { signal, systemPrompt, tools } = options;
   const client = getClient();
 
-  const stream = client.messages.stream(
-    {
-      model: getModel(),
-      max_tokens: DEFAULT_MAX_TOKENS,
-      system: systemPrompt || "You are a helpful coding assistant.",
-      messages: messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
-    },
-    { signal }
-  );
+  const requestParams: Parameters<typeof client.messages.stream>[0] = {
+    model: getModel(),
+    max_tokens: DEFAULT_MAX_TOKENS,
+    system: systemPrompt || "You are a helpful coding assistant.",
+    messages: messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    })),
+  };
+
+  if (tools && tools.length > 0) {
+    // SDK InputSchema is stricter than our Tool.inputSchema type
+    requestParams.tools = tools as never;
+  }
+
+  const stream = client.messages.stream(requestParams, { signal });
 
   const contentBlocks: ContentBlock[] = [];
 
@@ -59,12 +73,6 @@ export async function* streamMessage(
           currentToolId = event.content_block.id;
           currentToolName = event.content_block.name;
           currentToolInput = "";
-
-          yield {
-            type: "tool_use_start",
-            id: currentToolId,
-            name: currentToolName,
-          };
         }
         break;
       }
@@ -102,12 +110,21 @@ export async function* streamMessage(
           const input = currentToolInput
             ? JSON.parse(currentToolInput)
             : {};
+
           contentBlocks.push({
             type: "tool_use",
             id: currentToolId,
             name: currentToolName,
             input,
           } as ToolUseBlock);
+
+          yield {
+            type: "tool_use_start",
+            id: currentToolId,
+            name: currentToolName,
+            input,
+          };
+
           currentToolId = "";
           currentToolName = "";
           currentToolInput = "";

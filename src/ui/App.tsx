@@ -1,13 +1,20 @@
 import { useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 
+import { query } from '../core/agenticLoop.js';
+import type { LoopEvent } from '../core/agenticLoop.js';
+import { getAllTools } from '../tools/index.js';
 import { Spinner } from './components/Spinner.js';
-import { streamMessage } from '../services/api/streaming.js';
-import type { AssistantMessage, Message } from '../types/message.js';
+import type { Message } from '../types/message.js';
+
+const SYSTEM_PROMPT = 'You are a helpful coding assistant.';
 
 interface ToolCallInfo {
+  id: string;
   name: string;
   input: Record<string, unknown>;
+  done: boolean;
+  isError: boolean;
 }
 
 function getMessageText(message: Message): string {
@@ -23,7 +30,6 @@ function getMessageText(message: Message): string {
 export function App() {
   const { exit } = useApp();
 
-  // UI state
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -35,63 +41,65 @@ export function App() {
   } | null>(null);
   const [errorText, setErrorText] = useState('');
 
-  // Async/internal state
-  const abortRef = useRef<AbortController | null>(null);
+  const abortRef = useRef<{ aborted: boolean } | null>(null);
   const messagesRef = useRef<Message[]>([]);
 
-  async function runStreamingTurn(): Promise<AssistantMessage | null> {
-    setIsLoading(true);
-    setStreamingText('');
-    setToolCalls([]);
-    setErrorText('');
+  function handleLoopEvent(event: LoopEvent) {
+    switch (event.type) {
+      case 'text':
+        setStreamingText((prev) => prev + event.text);
+        break;
 
-    const abort = new AbortController();
-    abortRef.current = abort;
+      case 'tool_use_start':
+        setToolCalls((prev) => [
+          ...prev,
+          {
+            id: event.id,
+            name: event.name,
+            input: event.input,
+            done: false,
+            isError: false,
+          },
+        ]);
+        break;
 
-    const apiMessages = messagesRef.current;
+      case 'tool_use_done':
+        setToolCalls((prev) =>
+          prev.map((tc) =>
+            tc.id === event.id
+              ? { ...tc, done: true, isError: event.isError }
+              : tc
+          )
+        );
+        break;
 
-    try {
-      const generator = streamMessage(apiMessages, abort.signal);
-      let result = await generator.next();
+      case 'assistant_message':
+        messagesRef.current = [
+          ...messagesRef.current,
+          event.message,
+        ];
+        setMessages([...messagesRef.current]);
+        setStreamingText('');
+        break;
 
-      while (!result.done) {
-        const event = result.value;
+      case 'tool_result_message':
+        messagesRef.current = [
+          ...messagesRef.current,
+          event.message,
+        ];
+        setMessages([...messagesRef.current]);
+        break;
 
-        if (event.type === 'text') {
-          setStreamingText(prev => prev + event.text);
-        } else if (event.type === 'tool_use_start') {
-          setToolCalls(prev => [
-            ...prev,
-            {
-              name: event.name,
-              input: {},
-            },
-          ]);
+      case 'turn_complete':
+        if (event.reason === 'tool_use') {
+          setStreamingText('');
+          setToolCalls([]);
         }
+        break;
 
-        result = await generator.next();
-      }
-
-      setLastUsage({
-        in: result.value.usage.inputTokens,
-        out: result.value.usage.outputTokens,
-      });
-
-      return result.value.assistantMessage;
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        return null;
-      }
-
-      const msg =
-        err instanceof Error ? err.message : 'Unknown error';
-
-      setErrorText(msg);
-
-      return null;
-    } finally {
-      setIsLoading(false);
-      abortRef.current = null;
+      case 'error':
+        setErrorText(event.error.message);
+        break;
     }
   }
 
@@ -101,104 +109,109 @@ export function App() {
       content: text,
     };
 
-    const nextMessages = [
-      ...messagesRef.current,
-      userMsg,
-    ];
+    messagesRef.current = [...messagesRef.current, userMsg];
+    setMessages([...messagesRef.current]);
 
-    messagesRef.current = nextMessages;
-    setMessages(nextMessages);
+    setIsLoading(true);
+    setStreamingText('');
+    setToolCalls([]);
+    setErrorText('');
 
-    const response = await runStreamingTurn();
+    const abortSignal = { aborted: false };
+    abortRef.current = abortSignal;
 
-    if (response) {
-      const updatedMessages = [
-        ...messagesRef.current,
-        response,
-      ];
+    const loop = query({
+      messages: messagesRef.current,
+      tools: getAllTools(),
+      systemPrompt: SYSTEM_PROMPT,
+      maxTurns: 50,
+      abortSignal,
+      cwd: process.cwd(),
+    });
 
-      messagesRef.current = updatedMessages;
-      setMessages(updatedMessages);
+    try {
+      let result = await loop.next();
+
+      while (!result.done) {
+        handleLoopEvent(result.value);
+        result = await loop.next();
+      }
+
+      const loopResult = result.value;
+
+      messagesRef.current = loopResult.messages;
+      setMessages([...loopResult.messages]);
+      setLastUsage({
+        in: loopResult.usage.inputTokens,
+        out: loopResult.usage.outputTokens,
+      });
+
+      if (loopResult.terminationReason === 'aborted') {
+        setErrorText('Interrupted.');
+      } else if (loopResult.terminationReason === 'max_turns') {
+        setErrorText('Reached maximum number of turns.');
+      }
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : 'Unknown error';
+      setErrorText(msg);
+    } finally {
+      setIsLoading(false);
       setStreamingText('');
+      setToolCalls([]);
+      abortRef.current = null;
     }
   }
 
   useInput((input, key) => {
-    // Ctrl+C - interrupt streaming
     if (key.ctrl && input === 'c') {
       if (abortRef.current) {
-        abortRef.current.abort();
-        abortRef.current = null;
-
-        setIsLoading(false);
-        setStreamingText('');
-        setErrorText('Interrupted.');
+        abortRef.current.aborted = true;
       }
-
       return;
     }
 
-    // Ctrl+D - exit
     if (key.ctrl && input === 'd') {
       exit();
       return;
     }
 
-    // Don't accept normal input while loading
     if (isLoading) {
       return;
     }
 
-    // Enter - submit
     if (key.return) {
       if (inputValue.trim()) {
         handleSubmit(inputValue.trim());
         setInputValue('');
       }
-
       return;
     }
 
-    // Backspace
     if (key.backspace) {
-      setInputValue(prev => prev.slice(0, -1));
+      setInputValue((prev) => prev.slice(0, -1));
       return;
     }
 
-    // Normal characters
     if (input && !key.ctrl && !key.meta) {
-      setInputValue(prev => prev + input);
+      setInputValue((prev) => prev + input);
     }
   });
 
   return (
     <Box flexDirection="column" padding={1}>
-      {/* Header */}
       <Box marginBottom={1}>
         <Text bold color="cyan">
           Agent CLI
         </Text>
-
-        <Text dimColor>
-          {' '}
-          v0.1.0
-        </Text>
+        <Text dimColor> v0.1.0</Text>
       </Box>
 
-      {/* Message history */}
       {messages.map((msg, i) => (
-        <Box
-          key={i}
-          marginBottom={1}
-          flexDirection="column"
-        >
+        <Box key={i} marginBottom={1} flexDirection="column">
           <Text
             bold
-            color={
-              msg.role === 'user'
-                ? 'green'
-                : 'white'
-            }
+            color={msg.role === 'user' ? 'green' : 'white'}
           >
             {msg.role === 'user' ? '> ' : ''}
             {getMessageText(msg)}
@@ -206,54 +219,53 @@ export function App() {
         </Box>
       ))}
 
-      {/* Tool calls */}
       {toolCalls.map((tc, i) => (
         <Box key={`tool-${i}`}>
           <Text>
             {'  '}
-            <Text color="green">✓</Text>{' '}
+            {tc.done ? (
+              <Text color={tc.isError ? 'red' : 'green'}>
+                {tc.isError ? '✗' : '✓'}
+              </Text>
+            ) : (
+              <Text color="yellow">⋯</Text>
+            )}{' '}
             {tc.name}
           </Text>
         </Box>
       ))}
 
-      {/* Spinner */}
-      {isLoading && !streamingText && <Spinner />}
+      {isLoading && !streamingText && toolCalls.length === 0 && (
+        <Spinner />
+      )}
 
-      {/* Streaming response */}
       {streamingText && (
         <Box marginBottom={1}>
           <Text>{streamingText}</Text>
         </Box>
       )}
 
-      {/* Error */}
       {errorText && (
         <Box>
           <Text color="red">{errorText}</Text>
         </Box>
       )}
 
-      {/* Usage */}
       {lastUsage && (
         <Box>
           <Text dimColor>
-            tokens:{' '}
-            {lastUsage.in.toLocaleString()} in /{' '}
+            tokens: {lastUsage.in.toLocaleString()} in /{' '}
             {lastUsage.out.toLocaleString()} out
           </Text>
         </Box>
       )}
 
-      {/* Input */}
       {!isLoading && (
         <Box>
           <Text color="green" bold>
             {'> '}
           </Text>
-
           <Text>{inputValue}</Text>
-
           <Text color="gray">█</Text>
         </Box>
       )}

@@ -1,58 +1,54 @@
+import type { Tool, ToolContext } from "../tools/Tool.js";
 import type {
-  ToolUseBlock,
+  AssistantMessage,
   ToolResultBlock,
+  ToolUseBlock,
   UserMessage,
 } from "../types/message.js";
 
-import type { ToolContext } from "../tools/Tool.js";
-
-import { findToolByName } from "../tools/index.js";
-
 export async function executeTools(
-  toolUseBlocks: ToolUseBlock[],
+  assistantMessage: AssistantMessage,
+  tools: Tool[],
   context: ToolContext
 ): Promise<UserMessage> {
-  const results: ToolResultBlock[] =
-    await Promise.all(
-      toolUseBlocks.map(async (block) => {
-        const tool = findToolByName(block.name);
+  const toolUseBlocks = assistantMessage.content.filter(
+    (block): block is ToolUseBlock => block.type === "tool_use"
+  );
 
-        if (!tool) {
-          return {
-            type: "tool_result" as const,
-            tool_use_id: block.id,
-            content: `Unknown tool: ${block.name}`,
-            is_error: true,
-          };
-        }
+  const results: ToolResultBlock[] = [];
 
-        try {
-          const result = await tool.call(
-            block.input,
-            context
-          );
+  for (const toolUse of toolUseBlocks) {
+    const tool = tools.find((t) => t.name === toolUse.name);
 
-          return {
-            type: "tool_result" as const,
-            tool_use_id: block.id,
-            content: result.content,
-            is_error: result.isError,
-          };
-        } catch (error) {
-          return {
-            type: "tool_result" as const,
-            tool_use_id: block.id,
-            content:
-              `Tool execution failed: ${
-                error instanceof Error
-                  ? error.message
-                  : String(error)
-              }`,
-            is_error: true,
-          };
-        }
-      })
-    );
+    if (!tool) {
+      results.push({
+        type: "tool_result",
+        tool_use_id: toolUse.id,
+        content: `Error: unknown tool "${toolUse.name}"`,
+        is_error: true,
+      });
+      continue;
+    }
+
+    try {
+      const output = await tool.call(toolUse.input, context);
+      results.push({
+        type: "tool_result",
+        tool_use_id: toolUse.id,
+        content: output.content,
+        is_error: output.isError,
+      });
+    } catch (error) {
+      results.push({
+        type: "tool_result",
+        tool_use_id: toolUse.id,
+        content: `Error: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        is_error: true,
+      });
+    }
+  }
 
   return {
     role: "user",

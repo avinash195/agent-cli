@@ -40,6 +40,7 @@ export interface StreamEventToolUseStart {
   type: "tool_use_start";
   id: string;
   name: string;
+  input: Record<string, unknown>;
 }
 
 export interface StreamEventToolUseInput {
