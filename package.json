@@ -1,0 +1,18 @@
+{
+  "name": "agent-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "agent": "./dist/entrypoint/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/entrypoint/cli.ts",
+    "build": "tsc",
+    "start": "node dist/entrypoint/cli.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
