@@ -1,6 +1,6 @@
 import { readFile } from "fs/promises";
-import { resolve, isAbsolute } from "path";
 
+import { validatePath } from "../utils/paths.js";
 import type {
   Tool,
   ToolResult,
@@ -80,11 +80,9 @@ export const fileReadTool: Tool = {
     const offset = (input.offset as number) || 1;
     const limit = input.limit as number | undefined;
 
-    const absolutePath = isAbsolute(filePath)
-      ? filePath
-      : resolve(context.cwd, filePath);
-
     try {
+      const absolutePath = validatePath(filePath, context.cwd);
+
       const content = await readFile(
         absolutePath,
         "utf-8"
