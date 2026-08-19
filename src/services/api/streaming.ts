@@ -7,30 +7,45 @@ import type {
   ContentBlock,
   Message,
 } from "../../types/message.js";
-import { getClient, getModel, DEFAULT_MAX_TOKENS } from "./client.js";
+
+import {
+  getClient,
+  getModel,
+  DEFAULT_MAX_TOKENS,
+} from "./client.js";
 
 export async function* streamMessage(
   messages: Message[],
+  signal?: AbortSignal,
   systemPrompt?: string
 ): AsyncGenerator<StreamEvent, StreamResult> {
   const client = getClient();
 
-  const stream = client.messages.stream({
-    model: getModel(),
-    max_tokens: DEFAULT_MAX_TOKENS,
-    system: systemPrompt || "You are a helpful coding assistant.",
-    messages: messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    })),
-  });
+  const stream = client.messages.stream(
+    {
+      model: getModel(),
+      max_tokens: DEFAULT_MAX_TOKENS,
+      system: systemPrompt || "You are a helpful coding assistant.",
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+    },
+    { signal }
+  );
 
   const contentBlocks: ContentBlock[] = [];
+
   let currentText = "";
   let currentToolId = "";
   let currentToolName = "";
   let currentToolInput = "";
-  let usage = { inputTokens: 0, outputTokens: 0 };
+
+  let usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+  };
+
   let stopReason = "end_turn";
 
   yield { type: "message_start" };
@@ -44,6 +59,7 @@ export async function* streamMessage(
           currentToolId = event.content_block.id;
           currentToolName = event.content_block.name;
           currentToolInput = "";
+
           yield {
             type: "tool_use_start",
             id: currentToolId,
@@ -56,19 +72,32 @@ export async function* streamMessage(
       case "content_block_delta": {
         if (event.delta.type === "text_delta") {
           currentText += event.delta.text;
-          yield { type: "text", text: event.delta.text };
+
+          yield {
+            type: "text",
+            text: event.delta.text,
+          };
         } else if (event.delta.type === "input_json_delta") {
           currentToolInput += event.delta.partial_json;
-          yield { type: "tool_use_input", delta: event.delta.partial_json };
+
+          yield {
+            type: "tool_use_input",
+            delta: event.delta.partial_json,
+          };
         }
         break;
       }
 
       case "content_block_stop": {
         if (currentText) {
-          contentBlocks.push({ type: "text", text: currentText } as TextBlock);
+          contentBlocks.push({
+            type: "text",
+            text: currentText,
+          } as TextBlock);
+
           currentText = "";
         }
+
         if (currentToolName) {
           const input = currentToolInput
             ? JSON.parse(currentToolInput)
@@ -79,6 +108,7 @@ export async function* streamMessage(
             name: currentToolName,
             input,
           } as ToolUseBlock);
+          currentToolId = "";
           currentToolName = "";
           currentToolInput = "";
         }
@@ -104,7 +134,9 @@ export async function* streamMessage(
     }
   }
 
-  yield { type: "message_done" };
+  yield {
+    type: "message_done",
+  };
 
   const assistantMessage: AssistantMessage = {
     role: "assistant",

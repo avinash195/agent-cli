@@ -20,4 +20,27 @@ if (args.includes('--version') || args.includes('-v')) {
   process.exit(0);
 }
 
-console.log('Hello, Agent CLI!');
+if (args.includes('--help') || args.includes('-h')) {
+  console.log('Usage: agent [options]');
+  console.log('  -v, --version  Show version');
+  console.log('  -h, --help     Show help');
+  process.exit(0);
+}
+
+async function main() {
+  const { render } = await import('ink');
+  const { createElement } = await import('react');
+
+  const { App } = await import('../ui/App.js');
+
+  const instance = render(
+    createElement(App)
+  );
+
+  await instance.waitUntilExit();
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
