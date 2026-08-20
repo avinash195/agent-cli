@@ -34,11 +34,40 @@ function getMessageText(message: Message): string {
     .join('');
 }
 
-export function App() {
+function messagesToDisplay(messages: Message[]): DisplayMessage[] {
+  const result: DisplayMessage[] = [];
+
+  for (const msg of messages) {
+    if (msg.role === 'user') {
+      if (typeof msg.content === 'string') {
+        result.push({ role: 'user', content: msg.content });
+      }
+    } else {
+      const text = getMessageText(msg);
+      if (text) {
+        result.push({ role: 'assistant', content: text });
+      }
+    }
+  }
+
+  return result;
+}
+
+export interface AppProps {
+  initialMessages?: Message[];
+  initialUsage?: { inputTokens: number; outputTokens: number };
+  sessionId?: string;
+}
+
+export function App({
+  initialMessages = [],
+  initialUsage,
+  sessionId,
+}: AppProps) {
   const { exit } = useApp();
 
   const [displayMessages, setDisplayMessages] = useState<DisplayMessage[]>(
-    []
+    () => messagesToDisplay(initialMessages)
   );
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -47,7 +76,11 @@ export function App() {
   const [lastUsage, setLastUsage] = useState<{
     in: number;
     out: number;
-  } | null>(null);
+  } | null>(
+    initialUsage
+      ? { in: initialUsage.inputTokens, out: initialUsage.outputTokens }
+      : null
+  );
   const [activeModel, setActiveModel] = useState(getModel());
   const [errorText, setErrorText] = useState('');
   const [pendingPermission, setPendingPermission] =
@@ -72,6 +105,9 @@ export function App() {
       defaultModel: getModel(),
       cwd: process.cwd(),
       permissionPrompt,
+      initialMessages,
+      initialUsage,
+      sessionId,
     })
   ).current;
 
@@ -260,7 +296,11 @@ export function App() {
         <Text bold color="cyan">
           Agent CLI
         </Text>
-        <Text dimColor> v0.1.0 · {activeModel}</Text>
+        <Text dimColor>
+          {' '}
+          v0.1.0 · {activeModel}
+          {sessionId ? ` · ${sessionId.slice(0, 8)}` : ''}
+        </Text>
       </Box>
 
       {displayMessages.map((msg, i) => (

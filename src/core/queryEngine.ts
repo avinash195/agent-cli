@@ -1,3 +1,8 @@
+import crypto from "crypto";
+
+import { formatSessionList, listSessions } from "../commands/history.js";
+import { appendTranscriptEntry } from "../persistence/transcript.js";
+import type { TranscriptEntry } from "../persistence/types.js";
 import { renderSystemPrompt } from "./context/systemPrompt.js";
 import { query, type LoopEvent, type LoopResult } from "./agenticLoop.js";
 import { getAllTools } from "../tools/index.js";
@@ -24,22 +29,35 @@ export interface QueryEngineOptions {
   defaultModel?: string;
   cwd?: string;
   permissionPrompt?: PermissionPromptFn;
+  initialMessages?: Message[];
+  initialUsage?: Usage;
+  sessionId?: string;
+  persist?: boolean;
 }
 
 export class QueryEngine {
-  private messages: Message[] = [];
-  private totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+  private messages: Message[];
+  private totalUsage: Usage;
   private defaultModel: string;
   private sessionModelOverride: string | null = null;
   private abortController: AbortController | null = null;
   private readonly cwd: string;
   private readonly permissionPrompt?: PermissionPromptFn;
   private readonly sessionRules = new SessionRules();
+  private readonly sessionId: string;
+  private readonly persistenceEnabled: boolean;
 
   constructor(options: QueryEngineOptions = {}) {
     this.defaultModel = options.defaultModel ?? DEFAULT_MODEL;
     this.cwd = options.cwd ?? process.cwd();
     this.permissionPrompt = options.permissionPrompt;
+    this.messages = options.initialMessages ?? [];
+    this.totalUsage = options.initialUsage ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+    this.sessionId = options.sessionId ?? crypto.randomUUID();
+    this.persistenceEnabled = options.persist ?? true;
   }
 
   getActiveModel(): string {
@@ -54,17 +72,31 @@ export class QueryEngine {
     return this.messages.length;
   }
 
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
   abort(): void {
     this.abortController?.abort();
   }
 
   async *submitMessage(input: string): AsyncGenerator<QueryEngineEvent> {
     if (input.startsWith("/")) {
-      yield this.handleSlashCommand(input);
+      const result = await this.handleSlashCommand(input);
+      yield result;
       return;
     }
 
-    this.messages.push({ role: "user", content: input });
+    const userMessage: Message = { role: "user", content: input };
+    this.messages.push(userMessage);
+
+    await this.writeEntry({
+      type: "message",
+      timestamp: new Date().toISOString(),
+      role: "user",
+      message: userMessage,
+    });
+
     this.abortController = new AbortController();
 
     const systemPrompt = renderSystemPrompt({ cwd: this.cwd });
@@ -88,8 +120,43 @@ export class QueryEngine {
 
       if (event.type === "assistant_message") {
         this.messages.push(event.message as AssistantMessage);
+        await this.writeEntry({
+          type: "message",
+          timestamp: new Date().toISOString(),
+          role: "assistant",
+          message: event.message,
+        });
       } else if (event.type === "tool_result_message") {
         this.messages.push(event.message as UserMessage);
+        await this.writeEntry({
+          type: "message",
+          timestamp: new Date().toISOString(),
+          role: "user",
+          message: event.message,
+        });
+      } else if (event.type === "tool_use_start") {
+        await this.writeEntry({
+          type: "tool_event",
+          timestamp: new Date().toISOString(),
+          name: event.name,
+          phase: "start",
+        });
+      } else if (event.type === "tool_use_done") {
+        await this.writeEntry({
+          type: "tool_event",
+          timestamp: new Date().toISOString(),
+          name: event.name,
+          phase: "done",
+          resultLength: event.result.length,
+          isError: event.isError,
+        });
+      } else if (event.type === "turn_complete" && event.reason === "aborted") {
+        await this.writeEntry({
+          type: "system",
+          timestamp: new Date().toISOString(),
+          level: "info",
+          event: "aborted",
+        });
       }
 
       yield event;
@@ -99,16 +166,43 @@ export class QueryEngine {
     const loopResult: LoopResult = result.value;
     this.totalUsage.inputTokens += loopResult.usage.inputTokens;
     this.totalUsage.outputTokens += loopResult.usage.outputTokens;
+
+    await this.writeEntry({
+      type: "usage",
+      timestamp: new Date().toISOString(),
+      turn: loopResult.usage,
+      cumulative: { ...this.totalUsage },
+    });
+
+    if (loopResult.terminationReason === "model_error") {
+      await this.writeEntry({
+        type: "system",
+        timestamp: new Date().toISOString(),
+        level: "error",
+        event: "model_error",
+        detail: loopResult.terminationReason,
+      });
+    }
+
     this.abortController = null;
   }
 
-  private handleSlashCommand(input: string): QueryEngineEvent {
+  private async writeEntry(entry: TranscriptEntry): Promise<void> {
+    if (!this.persistenceEnabled) return;
+    await appendTranscriptEntry(this.cwd, this.sessionId, entry);
+  }
+
+  private async handleSlashCommand(
+    input: string
+  ): Promise<QueryEngineEvent> {
     const [command, ...args] = input.trim().split(/\s+/);
     const arg = args.join(" ");
 
+    let result: QueryEngineEvent;
+
     switch (command) {
       case "/help":
-        return {
+        result = {
           type: "slash_command_result",
           output: [
             "Available commands:",
@@ -116,17 +210,25 @@ export class QueryEngine {
             "  /clear          Reset conversation history",
             "  /cost           Show cumulative token usage",
             "  /model [name]   View or change model",
-            "  /history        Show message count",
+            "  /history        List past sessions for this project",
           ].join("\n"),
         };
+        break;
 
       case "/clear":
         this.messages = [];
         this.totalUsage = { inputTokens: 0, outputTokens: 0 };
-        return { type: "session_cleared" };
+        await this.writeEntry({
+          type: "system",
+          timestamp: new Date().toISOString(),
+          level: "info",
+          event: "session_cleared",
+        });
+        result = { type: "session_cleared" };
+        break;
 
       case "/cost":
-        return {
+        result = {
           type: "slash_command_result",
           output: [
             `Input tokens:  ${this.totalUsage.inputTokens.toLocaleString()}`,
@@ -134,22 +236,37 @@ export class QueryEngine {
             `Total tokens:  ${(this.totalUsage.inputTokens + this.totalUsage.outputTokens).toLocaleString()}`,
           ].join("\n"),
         };
+        break;
 
       case "/model":
-        return this.handleModelCommand(arg);
+        result = this.handleModelCommand(arg);
+        break;
 
-      case "/history":
-        return {
+      case "/history": {
+        const sessions = await listSessions(this.cwd);
+        result = {
           type: "slash_command_result",
-          output: `${this.messages.length} messages in conversation`,
+          output: formatSessionList(sessions),
         };
+        break;
+      }
 
       default:
-        return {
+        result = {
           type: "slash_command_result",
           output: `Unknown command: ${command}. Type /help for available commands.`,
         };
     }
+
+    await this.writeEntry({
+      type: "system",
+      timestamp: new Date().toISOString(),
+      level: "info",
+      event: "slash_command",
+      detail: input,
+    });
+
+    return result;
   }
 
   private handleModelCommand(arg: string): QueryEngineEvent {
