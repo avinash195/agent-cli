@@ -18,6 +18,7 @@ import { renderSystemPrompt } from "../../core/context/systemPrompt.js";
 export interface StreamMessageOptions {
   signal?: AbortSignal;
   systemPrompt?: string;
+  model?: string;
   cwd?: string;
   tools?: Array<{
     name: string;
@@ -30,7 +31,7 @@ export async function* streamMessage(
   messages: Message[],
   options: StreamMessageOptions = {}
 ): AsyncGenerator<StreamEvent, StreamResult> {
-  const { signal, systemPrompt, cwd, tools } = options;
+  const { signal, systemPrompt, model, cwd, tools } = options;
   const client = getClient();
 
   const resolvedSystemPrompt =
@@ -38,7 +39,7 @@ export async function* streamMessage(
     renderSystemPrompt({ cwd: cwd ?? process.cwd() });
 
   const requestParams: Parameters<typeof client.messages.stream>[0] = {
-    model: getModel(),
+    model: model ?? getModel(),
     max_tokens: DEFAULT_MAX_TOKENS,
     system: resolvedSystemPrompt,
     messages: messages.map((m) => ({

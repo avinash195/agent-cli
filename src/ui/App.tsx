@@ -1,9 +1,9 @@
 import { useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 
-import { query } from '../core/agenticLoop.js';
-import type { LoopEvent } from '../core/agenticLoop.js';
-import { getAllTools } from '../tools/index.js';
+import { QueryEngine } from '../core/queryEngine.js';
+import type { QueryEngineEvent } from '../core/queryEngine.js';
+import { getModel } from '../services/api/client.js';
 import { Spinner } from './components/Spinner.js';
 import type {
   ConfirmationPrompt,
@@ -14,10 +14,14 @@ import type { Message } from '../types/message.js';
 interface ToolCallInfo {
   id: string;
   name: string;
-  input: Record<string, unknown>;
   done: boolean;
   isError: boolean;
   denied?: boolean;
+}
+
+interface DisplayMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
 }
 
 function getMessageText(message: Message): string {
@@ -33,7 +37,9 @@ function getMessageText(message: Message): string {
 export function App() {
   const { exit } = useApp();
 
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [displayMessages, setDisplayMessages] = useState<DisplayMessage[]>(
+    []
+  );
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
@@ -42,12 +48,11 @@ export function App() {
     in: number;
     out: number;
   } | null>(null);
+  const [activeModel, setActiveModel] = useState(getModel());
   const [errorText, setErrorText] = useState('');
   const [pendingPermission, setPendingPermission] =
     useState<ConfirmationPrompt | null>(null);
 
-  const abortRef = useRef<{ aborted: boolean } | null>(null);
-  const messagesRef = useRef<Message[]>([]);
   const pendingPermissionRef = useRef<ConfirmationPrompt | null>(null);
   const permissionResolverRef = useRef<
     ((response: PermissionResponse) => void) | null
@@ -62,6 +67,14 @@ export function App() {
       })
   ).current;
 
+  const engine = useRef(
+    new QueryEngine({
+      defaultModel: getModel(),
+      cwd: process.cwd(),
+      permissionPrompt,
+    })
+  ).current;
+
   function resolvePermission(response: PermissionResponse) {
     permissionResolverRef.current?.(response);
     permissionResolverRef.current = null;
@@ -69,7 +82,7 @@ export function App() {
     setPendingPermission(null);
   }
 
-  function handleLoopEvent(event: LoopEvent) {
+  function handleEvent(event: QueryEngineEvent) {
     switch (event.type) {
       case 'text':
         setStreamingText((prev) => prev + event.text);
@@ -81,7 +94,6 @@ export function App() {
           {
             id: event.id,
             name: event.name,
-            input: event.input,
             done: false,
             isError: false,
           },
@@ -114,27 +126,42 @@ export function App() {
         break;
 
       case 'assistant_message':
-        messagesRef.current = [
-          ...messagesRef.current,
-          event.message,
-        ];
-        setMessages([...messagesRef.current]);
+        setDisplayMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: getMessageText(event.message),
+          },
+        ]);
         setStreamingText('');
-        break;
-
-      case 'tool_result_message':
-        messagesRef.current = [
-          ...messagesRef.current,
-          event.message,
-        ];
-        setMessages([...messagesRef.current]);
         break;
 
       case 'turn_complete':
         if (event.reason === 'tool_use') {
           setStreamingText('');
           setToolCalls([]);
+        } else if (event.reason === 'aborted') {
+          setErrorText('Interrupted.');
+        } else if (event.reason === 'max_turns') {
+          setErrorText('Reached maximum number of turns.');
         }
+        break;
+
+      case 'slash_command_result':
+        setDisplayMessages((prev) => [
+          ...prev,
+          { role: 'system', content: event.output },
+        ]);
+        setActiveModel(engine.getActiveModel());
+        break;
+
+      case 'session_cleared':
+        setDisplayMessages([]);
+        setStreamingText('');
+        setToolCalls([]);
+        setErrorText('');
+        setLastUsage(null);
+        setActiveModel(engine.getActiveModel());
         break;
 
       case 'error':
@@ -144,53 +171,26 @@ export function App() {
   }
 
   async function handleSubmit(text: string) {
-    const userMsg: Message = {
-      role: 'user',
-      content: text,
-    };
-
-    messagesRef.current = [...messagesRef.current, userMsg];
-    setMessages([...messagesRef.current]);
+    if (!text.startsWith('/')) {
+      setDisplayMessages((prev) => [
+        ...prev,
+        { role: 'user', content: text },
+      ]);
+    }
 
     setIsLoading(true);
     setStreamingText('');
     setToolCalls([]);
     setErrorText('');
 
-    const abortSignal = { aborted: false };
-    abortRef.current = abortSignal;
-
-    const loop = query({
-      messages: messagesRef.current,
-      tools: getAllTools(),
-      maxTurns: 50,
-      abortSignal,
-      cwd: process.cwd(),
-      permissionPrompt,
-    });
-
     try {
-      let result = await loop.next();
-
-      while (!result.done) {
-        handleLoopEvent(result.value);
-        result = await loop.next();
+      for await (const event of engine.submitMessage(text)) {
+        handleEvent(event);
       }
 
-      const loopResult = result.value;
-
-      messagesRef.current = loopResult.messages;
-      setMessages([...loopResult.messages]);
-      setLastUsage({
-        in: loopResult.usage.inputTokens,
-        out: loopResult.usage.outputTokens,
-      });
-
-      if (loopResult.terminationReason === 'aborted') {
-        setErrorText('Interrupted.');
-      } else if (loopResult.terminationReason === 'max_turns') {
-        setErrorText('Reached maximum number of turns.');
-      }
+      const usage = engine.getUsage();
+      setLastUsage({ in: usage.inputTokens, out: usage.outputTokens });
+      setActiveModel(engine.getActiveModel());
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : 'Unknown error';
@@ -199,7 +199,6 @@ export function App() {
       setIsLoading(false);
       setStreamingText('');
       setToolCalls([]);
-      abortRef.current = null;
       pendingPermissionRef.current = null;
       setPendingPermission(null);
       permissionResolverRef.current = null;
@@ -222,8 +221,8 @@ export function App() {
     }
 
     if (key.ctrl && input === 'c') {
-      if (abortRef.current) {
-        abortRef.current.aborted = true;
+      if (isLoading) {
+        engine.abort();
       }
       return;
     }
@@ -261,18 +260,22 @@ export function App() {
         <Text bold color="cyan">
           Agent CLI
         </Text>
-        <Text dimColor> v0.1.0</Text>
+        <Text dimColor> v0.1.0 · {activeModel}</Text>
       </Box>
 
-      {messages.map((msg, i) => (
+      {displayMessages.map((msg, i) => (
         <Box key={i} marginBottom={1} flexDirection="column">
-          <Text
-            bold
-            color={msg.role === 'user' ? 'green' : 'white'}
-          >
-            {msg.role === 'user' ? '> ' : ''}
-            {getMessageText(msg)}
-          </Text>
+          {msg.role === 'system' ? (
+            <Text dimColor>{msg.content}</Text>
+          ) : (
+            <Text
+              bold
+              color={msg.role === 'user' ? 'green' : 'white'}
+            >
+              {msg.role === 'user' ? '> ' : ''}
+              {msg.content}
+            </Text>
+          )}
         </Box>
       ))}
 

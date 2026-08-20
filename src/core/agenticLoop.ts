@@ -66,8 +66,9 @@ export interface QueryOptions {
   messages: Message[];
   tools: Tool[];
   systemPrompt?: string;
+  model?: string;
   maxTurns?: number;
-  abortSignal?: { aborted: boolean };
+  abortSignal?: AbortSignal;
   cwd?: string;
   mode?: AgentMode;
   rules?: PermissionRules;
@@ -87,6 +88,7 @@ export async function* query(
   const {
     tools,
     systemPrompt,
+    model,
     maxTurns = 50,
     abortSignal,
     cwd = process.cwd(),
@@ -114,7 +116,7 @@ export async function* query(
   }));
 
   while (state.turnCount < maxTurns) {
-    if (abortSignal?.aborted) {
+    if (abortSignal?.aborted === true) {
       state.aborted = true;
       yield {
         type: "turn_complete",
@@ -137,8 +139,10 @@ export async function* query(
     try {
       const stream = streamMessage(state.messages, {
         systemPrompt,
+        model,
         cwd,
         tools: toolsApiParams,
+        signal: abortSignal,
       });
 
       let streamResult = await stream.next();
