@@ -44,7 +44,7 @@ export interface LoopResult {
 export interface QueryOptions {
   messages: Message[];
   tools: Tool[];
-  systemPrompt: string;
+  systemPrompt?: string;
   maxTurns?: number;
   abortSignal?: { aborted: boolean };
   cwd?: string;
@@ -106,6 +106,7 @@ export async function* query(
     try {
       const stream = streamMessage(state.messages, {
         systemPrompt,
+        cwd,
         tools: toolsApiParams,
       });
 

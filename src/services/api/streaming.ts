@@ -13,10 +13,12 @@ import {
   getModel,
   DEFAULT_MAX_TOKENS,
 } from "./client.js";
+import { renderSystemPrompt } from "../../core/context/systemPrompt.js";
 
 export interface StreamMessageOptions {
   signal?: AbortSignal;
   systemPrompt?: string;
+  cwd?: string;
   tools?: Array<{
     name: string;
     description: string;
@@ -28,13 +30,17 @@ export async function* streamMessage(
   messages: Message[],
   options: StreamMessageOptions = {}
 ): AsyncGenerator<StreamEvent, StreamResult> {
-  const { signal, systemPrompt, tools } = options;
+  const { signal, systemPrompt, cwd, tools } = options;
   const client = getClient();
+
+  const resolvedSystemPrompt =
+    systemPrompt ??
+    renderSystemPrompt({ cwd: cwd ?? process.cwd() });
 
   const requestParams: Parameters<typeof client.messages.stream>[0] = {
     model: getModel(),
     max_tokens: DEFAULT_MAX_TOKENS,
-    system: systemPrompt || "You are a helpful coding assistant.",
+    system: resolvedSystemPrompt,
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content,

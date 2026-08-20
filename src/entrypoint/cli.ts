@@ -22,8 +22,15 @@ if (args.includes('--version') || args.includes('-v')) {
 
 if (args.includes('--help') || args.includes('-h')) {
   console.log('Usage: agent [options]');
-  console.log('  -v, --version  Show version');
-  console.log('  -h, --help     Show help');
+  console.log('  -v, --version           Show version');
+  console.log('  -h, --help              Show help');
+  console.log('  --dump-system-prompt    Print assembled system prompt and exit');
+  process.exit(0);
+}
+
+if (args.includes('--dump-system-prompt')) {
+  const { renderSystemPrompt } = await import('../core/context/systemPrompt.js');
+  console.log(renderSystemPrompt({ cwd: process.cwd() }));
   process.exit(0);
 }
 

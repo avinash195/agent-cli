@@ -7,8 +7,6 @@ import { getAllTools } from '../tools/index.js';
 import { Spinner } from './components/Spinner.js';
 import type { Message } from '../types/message.js';
 
-const SYSTEM_PROMPT = 'You are a helpful coding assistant.';
-
 interface ToolCallInfo {
   id: string;
   name: string;
@@ -123,7 +121,6 @@ export function App() {
     const loop = query({
       messages: messagesRef.current,
       tools: getAllTools(),
-      systemPrompt: SYSTEM_PROMPT,
       maxTurns: 50,
       abortSignal,
       cwd: process.cwd(),
