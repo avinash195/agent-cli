@@ -36,6 +36,9 @@ export function summarizeToolCall(
       return `Edit ${path}: replace "${preview}"`;
     }
 
+    case "write_memory":
+      return `Save memory: ${input.name as string}`;
+
     case "Read":
       return `Read ${input.file_path as string}`;
 

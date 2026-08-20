@@ -46,6 +46,7 @@ export class QueryEngine {
   private readonly sessionRules = new SessionRules();
   private readonly sessionId: string;
   private readonly persistenceEnabled: boolean;
+  private ignoreMemory = false;
 
   constructor(options: QueryEngineOptions = {}) {
     this.defaultModel = options.defaultModel ?? DEFAULT_MODEL;
@@ -76,6 +77,10 @@ export class QueryEngine {
     return this.sessionId;
   }
 
+  isMemoryIgnored(): boolean {
+    return this.ignoreMemory;
+  }
+
   abort(): void {
     this.abortController?.abort();
   }
@@ -99,7 +104,10 @@ export class QueryEngine {
 
     this.abortController = new AbortController();
 
-    const systemPrompt = renderSystemPrompt({ cwd: this.cwd });
+    const systemPrompt = renderSystemPrompt({
+      cwd: this.cwd,
+      ignoreMemory: this.ignoreMemory,
+    });
     const tools = getAllTools();
 
     const loop = query({
@@ -211,8 +219,32 @@ export class QueryEngine {
             "  /cost           Show cumulative token usage",
             "  /model [name]   View or change model",
             "  /history        List past sessions for this project",
+            "  /memory on|off  Enable or disable memory injection",
           ].join("\n"),
         };
+        break;
+
+      case "/memory":
+        if (arg === "off") {
+          this.ignoreMemory = true;
+          result = {
+            type: "slash_command_result",
+            output: "Memory injection disabled for this session.",
+          };
+        } else if (arg === "on") {
+          this.ignoreMemory = false;
+          result = {
+            type: "slash_command_result",
+            output: "Memory injection re-enabled.",
+          };
+        } else {
+          result = {
+            type: "slash_command_result",
+            output: this.ignoreMemory
+              ? "Memory injection is off. Use /memory on to re-enable."
+              : "Memory injection is on. Use /memory off to disable.",
+          };
+        }
         break;
 
       case "/clear":

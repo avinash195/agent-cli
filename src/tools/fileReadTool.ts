@@ -1,11 +1,8 @@
 import { readFile } from "fs/promises";
 
+import { getMemoryDir } from "../memory/loader.js";
 import { validatePath } from "../utils/paths.js";
-import type {
-  Tool,
-  ToolResult,
-  ToolContext,
-} from "./Tool.js";
+import type { Tool, ToolContext, ToolResult } from "./Tool.js";
 
 function formatLines(
   content: string,
@@ -26,11 +23,7 @@ function formatLines(
 
   return sliced
     .map((line, i) => {
-      const lineNum = String(start + i + 1).padStart(
-        padWidth,
-        " "
-      );
-
+      const lineNum = String(start + i + 1).padStart(padWidth, " ");
       return `${lineNum}|${line}`;
     })
     .join("\n");
@@ -46,7 +39,6 @@ export const fileReadTool: Tool = {
 
   inputSchema: {
     type: "object",
-
     properties: {
       file_path: {
         type: "string",
@@ -54,13 +46,11 @@ export const fileReadTool: Tool = {
           "The path to the file to read. " +
           "Relative paths are resolved from the working directory.",
       },
-
       offset: {
         type: "integer",
         description:
           "Line number to start reading from (1-indexed). Defaults to 1.",
       },
-
       limit: {
         type: "integer",
         description:
@@ -68,7 +58,6 @@ export const fileReadTool: Tool = {
           "If omitted, reads to end of file.",
       },
     },
-
     required: ["file_path"],
   },
 
@@ -81,23 +70,14 @@ export const fileReadTool: Tool = {
     const limit = input.limit as number | undefined;
 
     try {
-      const absolutePath = validatePath(filePath, context.cwd);
+      const absolutePath = validatePath(filePath, context.cwd, [
+        getMemoryDir(context.cwd),
+      ]);
 
-      const content = await readFile(
-        absolutePath,
-        "utf-8"
-      );
-
+      const content = await readFile(absolutePath, "utf-8");
       const totalLines = content.split("\n").length;
-
-      const formatted = formatLines(
-        content,
-        offset,
-        limit
-      );
-
-      const header =
-        `File: ${filePath} (${totalLines} lines total)`;
+      const formatted = formatLines(content, offset, limit);
+      const header = `File: ${filePath} (${totalLines} lines total)`;
 
       return {
         content: `${header}\n${formatted}`,
@@ -126,9 +106,7 @@ export const fileReadTool: Tool = {
       }
 
       const message =
-        err instanceof Error
-          ? err.message
-          : String(err);
+        err instanceof Error ? err.message : String(err);
 
       return {
         content: `Error reading file: ${message}`,

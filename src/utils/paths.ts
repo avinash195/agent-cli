@@ -13,15 +13,34 @@ export function resolvePath(filePath: string, cwd: string): string {
   return resolve(cwd, expanded);
 }
 
-export function validatePath(filePath: string, cwd: string): string {
-  const resolved = resolvePath(filePath, cwd);
-  const rel = relative(cwd, resolved);
+function isUnderDirectory(resolved: string, base: string): boolean {
+  const rel = relative(base, resolved);
+  return !rel.startsWith("..") && rel !== "" && resolve(base, rel) === resolved;
+}
 
-  if (rel.startsWith("..") || resolve(cwd, rel) !== resolved) {
-    throw new Error(
-      `Path "${filePath}" resolves outside the working directory`
-    );
+export function validatePath(
+  filePath: string,
+  cwd: string,
+  allowedPaths: string[] = []
+): string {
+  const expanded = expandHome(filePath);
+  const resolved = expanded.startsWith("/")
+    ? resolve(expanded)
+    : resolvePath(filePath, cwd);
+
+  const rel = relative(cwd, resolved);
+  if (!rel.startsWith("..") && resolve(cwd, rel) === resolved) {
+    return resolved;
   }
 
-  return resolved;
+  for (const allowed of allowedPaths) {
+    const allowedResolved = resolve(allowed);
+    if (resolved === allowedResolved || isUnderDirectory(resolved, allowedResolved)) {
+      return resolved;
+    }
+  }
+
+  throw new Error(
+    `Path "${filePath}" resolves outside the working directory`
+  );
 }

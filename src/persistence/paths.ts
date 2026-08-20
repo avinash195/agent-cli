@@ -22,3 +22,10 @@ export function latestPath(cwd: string): string {
   const hash = projectHash(cwd);
   return path.join(AGENT_HOME, "projects", hash, "latest");
 }
+
+export function memoryDir(cwd: string): string {
+  const hash = projectHash(cwd);
+  return path.join(AGENT_HOME, "projects", hash, "memory");
+}
+
+export { AGENT_HOME };

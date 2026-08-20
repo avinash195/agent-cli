@@ -4,12 +4,14 @@ import { editTool } from "./editTool.js";
 import { fileReadTool } from "./fileReadTool.js";
 import { globTool } from "./globTool.js";
 import { grepTool } from "./grepTool.js";
+import { memoryWriteTool } from "./memoryWriteTool.js";
 import { writeTool } from "./writeTool.js";
 
 const allTools: Tool[] = [
   fileReadTool,
   writeTool,
   editTool,
+  memoryWriteTool,
   bashTool,
   grepTool,
   globTool,
