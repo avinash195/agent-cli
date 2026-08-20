@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.57.0",
+    "chalk": "^6.0.0",
     "dotenv": "^16.4.7",
     "ink": "^7.1.1",
     "react": "^19.2.8"

@@ -1,5 +1,12 @@
-import { executeTools } from "./executeTool.js";
+import { loadRules } from "../config/settings.js";
+import { executeSingleTool } from "./executeTool.js";
 import { streamMessage } from "../services/api/streaming.js";
+import {
+  evaluatePermission,
+  SessionRules,
+  type AgentMode,
+  type PermissionRules,
+} from "../permissions/permissions.js";
 import type { Tool, ToolContext } from "../tools/Tool.js";
 import type {
   AssistantMessage,
@@ -7,6 +14,14 @@ import type {
   ToolResultBlock,
   UserMessage,
 } from "../types/message.js";
+import {
+  createTerminalPermissionPrompt,
+  inferPattern,
+  summarizeToolCall,
+  type ConfirmationPrompt,
+  type PermissionPromptFn,
+  type PermissionResponse,
+} from "../ui/confirmationPrompt.js";
 
 export type LoopTerminationReason =
   | "completed"
@@ -29,6 +44,12 @@ export type LoopEvent =
       result: string;
       isError: boolean;
     }
+  | {
+      type: "tool_denied";
+      id: string;
+      name: string;
+      reason: string;
+    }
   | { type: "assistant_message"; message: AssistantMessage }
   | { type: "tool_result_message"; message: UserMessage }
   | { type: "turn_complete"; turnCount: number; reason: string }
@@ -48,6 +69,10 @@ export interface QueryOptions {
   maxTurns?: number;
   abortSignal?: { aborted: boolean };
   cwd?: string;
+  mode?: AgentMode;
+  rules?: PermissionRules;
+  sessionRules?: SessionRules;
+  permissionPrompt?: PermissionPromptFn;
 }
 
 interface LoopState {
@@ -65,7 +90,13 @@ export async function* query(
     maxTurns = 50,
     abortSignal,
     cwd = process.cwd(),
+    mode,
+    rules = loadRules(),
+    sessionRules = new SessionRules(),
+    permissionPrompt = createTerminalPermissionPrompt(),
   } = options;
+
+  const effectiveMode = mode ?? rules.mode;
 
   const state: LoopState = {
     messages: [...options.messages],
@@ -160,25 +191,90 @@ export async function* query(
       };
     }
 
-    const toolResultMessage = await executeTools(
-      assistantMessage,
-      tools,
-      toolContext
+    const toolUseBlocks = assistantMessage.content.filter(
+      (block) => block.type === "tool_use"
     );
 
-    const toolResultContent = toolResultMessage.content;
-    const toolResultBlocks = Array.isArray(toolResultContent)
-      ? toolResultContent
-      : [];
+    const toolResults: ToolResultBlock[] = [];
+
+    for (const toolCall of toolUseBlocks) {
+      if (toolCall.type !== "tool_use") continue;
+
+      const decision = evaluatePermission(
+        toolCall.name,
+        toolCall.input,
+        rules,
+        effectiveMode,
+        sessionRules
+      );
+
+      if (decision.decision === "deny") {
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolCall.id,
+          content: `Permission denied: ${decision.reason}`,
+          is_error: true,
+        });
+        continue;
+      }
+
+      if (decision.decision === "ask") {
+        const response = await permissionPrompt({
+          toolName: toolCall.name,
+          summary: summarizeToolCall(toolCall.name, toolCall.input),
+          risk: decision.reason,
+        });
+
+        if (response === "deny") {
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolCall.id,
+            content: "User denied this operation.",
+            is_error: true,
+          });
+          continue;
+        }
+
+        if (response === "always_allow") {
+          const pattern = inferPattern(toolCall.name, toolCall.input);
+          sessionRules.add(pattern);
+        }
+      }
+
+      const result = await executeSingleTool(
+        toolCall,
+        tools,
+        toolContext
+      );
+      toolResults.push(result);
+    }
+
+    const toolResultMessage: UserMessage = {
+      role: "user",
+      content: toolResults,
+    };
 
     for (const block of assistantMessage.content) {
       if (block.type === "tool_use") {
-        const result = toolResultBlocks.find(
+        const result = toolResults.find(
           (r): r is ToolResultBlock =>
             r.type === "tool_result" && r.tool_use_id === block.id
         );
 
         if (result) {
+          const wasDenied =
+            result.content.startsWith("Permission denied:") ||
+            result.content === "User denied this operation.";
+
+          if (wasDenied) {
+            yield {
+              type: "tool_denied",
+              id: block.id,
+              name: block.name,
+              reason: result.content,
+            };
+          }
+
           yield {
             type: "tool_use_done",
             id: block.id,

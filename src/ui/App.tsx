@@ -5,6 +5,10 @@ import { query } from '../core/agenticLoop.js';
 import type { LoopEvent } from '../core/agenticLoop.js';
 import { getAllTools } from '../tools/index.js';
 import { Spinner } from './components/Spinner.js';
+import type {
+  ConfirmationPrompt,
+  PermissionResponse,
+} from './confirmationPrompt.js';
 import type { Message } from '../types/message.js';
 
 interface ToolCallInfo {
@@ -13,6 +17,7 @@ interface ToolCallInfo {
   input: Record<string, unknown>;
   done: boolean;
   isError: boolean;
+  denied?: boolean;
 }
 
 function getMessageText(message: Message): string {
@@ -38,9 +43,31 @@ export function App() {
     out: number;
   } | null>(null);
   const [errorText, setErrorText] = useState('');
+  const [pendingPermission, setPendingPermission] =
+    useState<ConfirmationPrompt | null>(null);
 
   const abortRef = useRef<{ aborted: boolean } | null>(null);
   const messagesRef = useRef<Message[]>([]);
+  const pendingPermissionRef = useRef<ConfirmationPrompt | null>(null);
+  const permissionResolverRef = useRef<
+    ((response: PermissionResponse) => void) | null
+  >(null);
+
+  const permissionPrompt = useRef(
+    (prompt: ConfirmationPrompt): Promise<PermissionResponse> =>
+      new Promise((resolve) => {
+        permissionResolverRef.current = resolve;
+        pendingPermissionRef.current = prompt;
+        setPendingPermission(prompt);
+      })
+  ).current;
+
+  function resolvePermission(response: PermissionResponse) {
+    permissionResolverRef.current?.(response);
+    permissionResolverRef.current = null;
+    pendingPermissionRef.current = null;
+    setPendingPermission(null);
+  }
 
   function handleLoopEvent(event: LoopEvent) {
     switch (event.type) {
@@ -59,6 +86,21 @@ export function App() {
             isError: false,
           },
         ]);
+        break;
+
+      case 'tool_denied':
+        setToolCalls((prev) =>
+          prev.map((tc) =>
+            tc.id === event.id
+              ? {
+                  ...tc,
+                  done: true,
+                  isError: true,
+                  denied: true,
+                }
+              : tc
+          )
+        );
         break;
 
       case 'tool_use_done':
@@ -124,6 +166,7 @@ export function App() {
       maxTurns: 50,
       abortSignal,
       cwd: process.cwd(),
+      permissionPrompt,
     });
 
     try {
@@ -157,10 +200,27 @@ export function App() {
       setStreamingText('');
       setToolCalls([]);
       abortRef.current = null;
+      pendingPermissionRef.current = null;
+      setPendingPermission(null);
+      permissionResolverRef.current = null;
     }
   }
 
   useInput((input, key) => {
+    if (pendingPermissionRef.current) {
+      const choice = (input || '').toLowerCase();
+      if (choice === 'y') {
+        resolvePermission('allow_once');
+      } else if (choice === 'n') {
+        resolvePermission('deny');
+      } else if (choice === 'a') {
+        resolvePermission('always_allow');
+      } else if (key.ctrl && input === 'c') {
+        resolvePermission('deny');
+      }
+      return;
+    }
+
     if (key.ctrl && input === 'c') {
       if (abortRef.current) {
         abortRef.current.aborted = true;
@@ -221,8 +281,8 @@ export function App() {
           <Text>
             {'  '}
             {tc.done ? (
-              <Text color={tc.isError ? 'red' : 'green'}>
-                {tc.isError ? '✗' : '✓'}
+              <Text color={tc.denied || tc.isError ? 'red' : 'green'}>
+                {tc.denied ? '⊘' : tc.isError ? '✗' : '✓'}
               </Text>
             ) : (
               <Text color="yellow">⋯</Text>
@@ -232,7 +292,35 @@ export function App() {
         </Box>
       ))}
 
-      {isLoading && !streamingText && toolCalls.length === 0 && (
+      {pendingPermission && (
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor="yellow"
+          paddingX={1}
+          marginY={1}
+        >
+          <Text color="yellow" bold>
+            ⚠ Permission required
+          </Text>
+          <Text> Tool: {pendingPermission.toolName}</Text>
+          <Text> Action: {pendingPermission.summary}</Text>
+          <Text dimColor> Risk: {pendingPermission.risk}</Text>
+          <Box marginTop={1} flexDirection="column">
+            <Text>
+              <Text color="green">[y]</Text> allow once
+            </Text>
+            <Text>
+              <Text color="red">[n]</Text> deny
+            </Text>
+            <Text>
+              <Text color="blue">[a]</Text> always allow this pattern
+            </Text>
+          </Box>
+        </Box>
+      )}
+
+      {isLoading && !streamingText && toolCalls.length === 0 && !pendingPermission && (
         <Spinner />
       )}
 
@@ -257,7 +345,7 @@ export function App() {
         </Box>
       )}
 
-      {!isLoading && (
+      {!isLoading && !pendingPermission && (
         <Box>
           <Text color="green" bold>
             {'> '}

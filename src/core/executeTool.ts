@@ -6,6 +6,42 @@ import type {
   UserMessage,
 } from "../types/message.js";
 
+export async function executeSingleTool(
+  toolUse: ToolUseBlock,
+  tools: Tool[],
+  context: ToolContext
+): Promise<ToolResultBlock> {
+  const tool = tools.find((t) => t.name === toolUse.name);
+
+  if (!tool) {
+    return {
+      type: "tool_result",
+      tool_use_id: toolUse.id,
+      content: `Error: unknown tool "${toolUse.name}"`,
+      is_error: true,
+    };
+  }
+
+  try {
+    const output = await tool.call(toolUse.input, context);
+    return {
+      type: "tool_result",
+      tool_use_id: toolUse.id,
+      content: output.content,
+      is_error: output.isError,
+    };
+  } catch (error) {
+    return {
+      type: "tool_result",
+      tool_use_id: toolUse.id,
+      content: `Error: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      is_error: true,
+    };
+  }
+}
+
 export async function executeTools(
   assistantMessage: AssistantMessage,
   tools: Tool[],
@@ -18,36 +54,7 @@ export async function executeTools(
   const results: ToolResultBlock[] = [];
 
   for (const toolUse of toolUseBlocks) {
-    const tool = tools.find((t) => t.name === toolUse.name);
-
-    if (!tool) {
-      results.push({
-        type: "tool_result",
-        tool_use_id: toolUse.id,
-        content: `Error: unknown tool "${toolUse.name}"`,
-        is_error: true,
-      });
-      continue;
-    }
-
-    try {
-      const output = await tool.call(toolUse.input, context);
-      results.push({
-        type: "tool_result",
-        tool_use_id: toolUse.id,
-        content: output.content,
-        is_error: output.isError,
-      });
-    } catch (error) {
-      results.push({
-        type: "tool_result",
-        tool_use_id: toolUse.id,
-        content: `Error: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        is_error: true,
-      });
-    }
+    results.push(await executeSingleTool(toolUse, tools, context));
   }
 
   return {
