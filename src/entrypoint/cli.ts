@@ -32,7 +32,7 @@ if (args.includes('--help') || args.includes('-h')) {
 }
 
 if (args.includes('--dump-system-prompt')) {
-  const { renderSystemPrompt } = await import('../core/context/systemPrompt.js');
+  const { renderSystemPrompt } = await import('../context/systemPrompt.js');
   console.log(renderSystemPrompt({ cwd }));
   process.exit(0);
 }

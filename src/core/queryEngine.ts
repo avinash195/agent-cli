@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { formatSessionList, listSessions } from "../commands/history.js";
 import { appendTranscriptEntry } from "../persistence/transcript.js";
 import type { TranscriptEntry } from "../persistence/types.js";
-import { renderSystemPrompt } from "./context/systemPrompt.js";
+import { renderSystemPrompt } from "../context/systemPrompt.js";
 import { query, type LoopEvent, type LoopResult } from "./agenticLoop.js";
 import { getAllTools } from "../tools/index.js";
 import { DEFAULT_MODEL } from "../services/api/client.js";

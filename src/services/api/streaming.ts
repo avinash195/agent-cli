@@ -13,7 +13,7 @@ import {
   getModel,
   DEFAULT_MAX_TOKENS,
 } from "./client.js";
-import { renderSystemPrompt } from "../../core/context/systemPrompt.js";
+import { renderSystemPrompt } from "../../context/systemPrompt.js";
 
 export interface StreamMessageOptions {
   signal?: AbortSignal;
