@@ -200,6 +200,23 @@ export function App({
         setActiveModel(engine.getActiveModel());
         break;
 
+      case 'compaction': {
+        const reduction =
+          event.tokensBefore === 0
+            ? 0
+            : Math.round(
+                (1 - event.tokensAfter / event.tokensBefore) * 100
+              );
+        setDisplayMessages((prev) => [
+          ...prev,
+          {
+            role: 'system',
+            content: `Compacted: ${event.tokensBefore.toLocaleString()} → ${event.tokensAfter.toLocaleString()} tokens (${reduction}% reduction)`,
+          },
+        ]);
+        break;
+      }
+
       case 'error':
         setErrorText(event.error.message);
         break;

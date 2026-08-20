@@ -33,13 +33,22 @@ export async function restoreSession(
   const raw = await readFile(filePath, "utf-8");
   const lines = raw.trim().split("\n").filter(Boolean);
 
+  let lastCompactionIndex = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const parsed: TranscriptEntry = JSON.parse(lines[i]);
+    if (parsed.type === "compaction") {
+      lastCompactionIndex = i;
+      break;
+    }
+  }
+
   const messages: Message[] = [];
   let usage = { inputTokens: 0, outputTokens: 0 };
 
-  for (const line of lines) {
-    const entry: TranscriptEntry = JSON.parse(line);
+  for (let i = 0; i < lines.length; i++) {
+    const entry: TranscriptEntry = JSON.parse(lines[i]);
 
-    if (entry.type === "message") {
+    if (entry.type === "message" && i > lastCompactionIndex) {
       messages.push((entry as MessageEntry).message);
     }
 

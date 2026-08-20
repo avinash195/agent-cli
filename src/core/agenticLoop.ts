@@ -1,3 +1,10 @@
+import {
+  DEFAULT_MAX_CONTEXT_TOKENS,
+  microCompact,
+  performCompaction,
+  shouldAutoCompact,
+  type CompactionResult,
+} from "../compression/index.js";
 import { loadRules } from "../config/settings.js";
 import { executeSingleTool } from "./executeTool.js";
 import { streamMessage } from "../services/api/streaming.js";
@@ -52,6 +59,12 @@ export type LoopEvent =
     }
   | { type: "assistant_message"; message: AssistantMessage }
   | { type: "tool_result_message"; message: UserMessage }
+  | {
+      type: "compaction";
+      tokensBefore: number;
+      tokensAfter: number;
+      result: CompactionResult;
+    }
   | { type: "turn_complete"; turnCount: number; reason: string }
   | { type: "error"; error: Error };
 
@@ -60,6 +73,8 @@ export interface LoopResult {
   terminationReason: LoopTerminationReason;
   turnCount: number;
   usage: { inputTokens: number; outputTokens: number };
+  lastCallUsage?: { inputTokens: number };
+  usageAnchorIndex?: number;
 }
 
 export interface QueryOptions {
@@ -74,12 +89,17 @@ export interface QueryOptions {
   rules?: PermissionRules;
   sessionRules?: SessionRules;
   permissionPrompt?: PermissionPromptFn;
+  maxContextTokens?: number;
+  lastCallUsage?: { inputTokens: number };
+  usageAnchorIndex?: number;
 }
 
 interface LoopState {
   messages: Message[];
   turnCount: number;
   aborted: boolean;
+  lastCallUsage?: { inputTokens: number };
+  usageAnchorIndex?: number;
 }
 
 export async function* query(
@@ -96,6 +116,7 @@ export async function* query(
     rules = loadRules(),
     sessionRules = new SessionRules(),
     permissionPrompt = createTerminalPermissionPrompt(),
+    maxContextTokens = DEFAULT_MAX_CONTEXT_TOKENS,
   } = options;
 
   const effectiveMode = mode ?? rules.mode;
@@ -104,10 +125,21 @@ export async function* query(
     messages: [...options.messages],
     turnCount: 0,
     aborted: false,
+    lastCallUsage: options.lastCallUsage,
+    usageAnchorIndex: options.usageAnchorIndex,
   };
 
   const toolContext: ToolContext = { cwd };
   let totalUsage = { inputTokens: 0, outputTokens: 0 };
+
+  const finish = (reason: LoopTerminationReason): LoopResult => ({
+    messages: state.messages,
+    terminationReason: reason,
+    turnCount: state.turnCount,
+    usage: totalUsage,
+    lastCallUsage: state.lastCallUsage,
+    usageAnchorIndex: state.usageAnchorIndex,
+  });
 
   const toolsApiParams = tools.map((tool) => ({
     name: tool.name,
@@ -123,15 +155,38 @@ export async function* query(
         turnCount: state.turnCount,
         reason: "aborted",
       };
-      return {
-        messages: state.messages,
-        terminationReason: "aborted",
-        turnCount: state.turnCount,
-        usage: totalUsage,
-      };
+      return finish("aborted");
     }
 
     state.turnCount++;
+
+    state.messages = microCompact(state.messages);
+
+    const compactOptions = {
+      maxContextTokens,
+      lastUsage: state.lastCallUsage,
+      usageAnchorIndex: state.usageAnchorIndex,
+      model,
+    };
+
+    if (shouldAutoCompact(state.messages, compactOptions)) {
+      try {
+        const result = await performCompaction(state.messages, compactOptions);
+        if (result.summary !== "") {
+          state.messages = result.messages;
+          state.lastCallUsage = undefined;
+          state.usageAnchorIndex = undefined;
+          yield {
+            type: "compaction",
+            tokensBefore: result.tokensBefore,
+            tokensAfter: result.tokensAfter,
+            result,
+          };
+        }
+      } catch (error) {
+        yield { type: "error", error: error as Error };
+      }
+    }
 
     let assistantMessage: AssistantMessage;
     let stopReason: string;
@@ -168,14 +223,13 @@ export async function* query(
       stopReason = streamResult.value.stopReason;
       totalUsage.inputTokens += streamResult.value.usage.inputTokens;
       totalUsage.outputTokens += streamResult.value.usage.outputTokens;
+      state.lastCallUsage = {
+        inputTokens: streamResult.value.usage.inputTokens,
+      };
+      state.usageAnchorIndex = state.messages.length - 1;
     } catch (error) {
       yield { type: "error", error: error as Error };
-      return {
-        messages: state.messages,
-        terminationReason: "model_error",
-        turnCount: state.turnCount,
-        usage: totalUsage,
-      };
+      return finish("model_error");
     }
 
     state.messages.push(assistantMessage);
@@ -187,12 +241,7 @@ export async function* query(
         turnCount: state.turnCount,
         reason: "completed",
       };
-      return {
-        messages: state.messages,
-        terminationReason: "completed",
-        turnCount: state.turnCount,
-        usage: totalUsage,
-      };
+      return finish("completed");
     }
 
     const toolUseBlocks = assistantMessage.content.filter(
@@ -299,10 +348,5 @@ export async function* query(
     };
   }
 
-  return {
-    messages: state.messages,
-    terminationReason: "max_turns",
-    turnCount: state.turnCount,
-    usage: totalUsage,
-  };
+  return finish("max_turns");
 }

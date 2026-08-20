@@ -1,7 +1,16 @@
 import crypto from "crypto";
 
+import {
+  DEFAULT_MAX_CONTEXT_TOKENS,
+  formatCompactResult,
+  parseCompactCommand,
+  performCompaction,
+} from "../compression/index.js";
 import { formatSessionList, listSessions } from "../commands/history.js";
-import { appendTranscriptEntry } from "../persistence/transcript.js";
+import {
+  appendCompactionToTranscript,
+  appendTranscriptEntry,
+} from "../persistence/transcript.js";
 import type { TranscriptEntry } from "../persistence/types.js";
 import { renderSystemPrompt } from "../context/systemPrompt.js";
 import { query, type LoopEvent, type LoopResult } from "./agenticLoop.js";
@@ -46,7 +55,10 @@ export class QueryEngine {
   private readonly sessionRules = new SessionRules();
   private readonly sessionId: string;
   private readonly persistenceEnabled: boolean;
+  private readonly maxContextTokens: number;
   private ignoreMemory = false;
+  private lastCallUsage?: { inputTokens: number };
+  private usageAnchorIndex?: number;
 
   constructor(options: QueryEngineOptions = {}) {
     this.defaultModel = options.defaultModel ?? DEFAULT_MODEL;
@@ -59,6 +71,7 @@ export class QueryEngine {
     };
     this.sessionId = options.sessionId ?? crypto.randomUUID();
     this.persistenceEnabled = options.persist ?? true;
+    this.maxContextTokens = DEFAULT_MAX_CONTEXT_TOKENS;
   }
 
   getActiveModel(): string {
@@ -120,6 +133,9 @@ export class QueryEngine {
       cwd: this.cwd,
       permissionPrompt: this.permissionPrompt,
       sessionRules: this.sessionRules,
+      maxContextTokens: this.maxContextTokens,
+      lastCallUsage: this.lastCallUsage,
+      usageAnchorIndex: this.usageAnchorIndex,
     });
 
     let result = await loop.next();
@@ -158,6 +174,17 @@ export class QueryEngine {
           resultLength: event.result.length,
           isError: event.isError,
         });
+      } else if (event.type === "compaction") {
+        this.messages = [...event.result.messages];
+        this.lastCallUsage = undefined;
+        this.usageAnchorIndex = undefined;
+        if (this.persistenceEnabled) {
+          await appendCompactionToTranscript(
+            this.cwd,
+            this.sessionId,
+            event.result
+          );
+        }
       } else if (event.type === "turn_complete" && event.reason === "aborted") {
         await this.writeEntry({
           type: "system",
@@ -172,6 +199,9 @@ export class QueryEngine {
     }
 
     const loopResult: LoopResult = result.value;
+    this.messages = loopResult.messages;
+    this.lastCallUsage = loopResult.lastCallUsage;
+    this.usageAnchorIndex = loopResult.usageAnchorIndex;
     this.totalUsage.inputTokens += loopResult.usage.inputTokens;
     this.totalUsage.outputTokens += loopResult.usage.outputTokens;
 
@@ -217,6 +247,7 @@ export class QueryEngine {
             "  /help           Show this message",
             "  /clear          Reset conversation history",
             "  /cost           Show cumulative token usage",
+            "  /compact [focus] Compress conversation history",
             "  /model [name]   View or change model",
             "  /history        List past sessions for this project",
             "  /memory on|off  Enable or disable memory injection",
@@ -250,6 +281,8 @@ export class QueryEngine {
       case "/clear":
         this.messages = [];
         this.totalUsage = { inputTokens: 0, outputTokens: 0 };
+        this.lastCallUsage = undefined;
+        this.usageAnchorIndex = undefined;
         await this.writeEntry({
           type: "system",
           timestamp: new Date().toISOString(),
@@ -282,6 +315,10 @@ export class QueryEngine {
         };
         break;
       }
+
+      case "/compact":
+        result = await this.handleCompactCommand(input);
+        break;
 
       default:
         result = {
@@ -323,6 +360,47 @@ export class QueryEngine {
     return {
       type: "slash_command_result",
       output: `Model set to: ${arg} (session override)`,
+    };
+  }
+
+  private async handleCompactCommand(input: string): Promise<QueryEngineEvent> {
+    const command = parseCompactCommand(input);
+    if (!command) {
+      return {
+        type: "slash_command_result",
+        output: 'Usage: /compact [focus]  or  /compact "focus directive"',
+      };
+    }
+
+    if (this.messages.length === 0) {
+      return {
+        type: "slash_command_result",
+        output: "Nothing to compact.",
+      };
+    }
+
+    const result = await performCompaction(this.messages, {
+      maxContextTokens: this.maxContextTokens,
+      focusDirective: command.focusDirective,
+      force: true,
+      lastUsage: this.lastCallUsage,
+      usageAnchorIndex: this.usageAnchorIndex,
+      model: this.getActiveModel(),
+    });
+
+    this.messages = result.messages;
+    this.lastCallUsage = undefined;
+    this.usageAnchorIndex = undefined;
+
+    if (result.summary !== "") {
+      if (this.persistenceEnabled) {
+        await appendCompactionToTranscript(this.cwd, this.sessionId, result);
+      }
+    }
+
+    return {
+      type: "slash_command_result",
+      output: formatCompactResult(result),
     };
   }
 }

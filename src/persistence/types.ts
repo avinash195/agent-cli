@@ -39,9 +39,18 @@ export interface SystemEntry {
   detail?: string;
 }
 
+export interface CompactionEntry {
+  type: "compaction";
+  timestamp: string;
+  tokensBefore: number;
+  tokensAfter: number;
+  summary: string;
+}
+
 export type TranscriptEntry =
   | SessionMetaEntry
   | MessageEntry
   | ToolEventEntry
   | UsageEntry
-  | SystemEntry;
+  | SystemEntry
+  | CompactionEntry;
