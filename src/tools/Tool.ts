@@ -12,6 +12,7 @@ export interface Tool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  maxResultSizeChars?: number;
 
   call(
     input: Record<string, unknown>,

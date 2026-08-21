@@ -31,6 +31,7 @@ function formatLines(
 
 export const fileReadTool: Tool = {
   name: "Read",
+  maxResultSizeChars: 50_000,
 
   description:
     "Read the contents of a file from the local filesystem. " +

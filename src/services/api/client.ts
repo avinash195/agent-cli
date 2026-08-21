@@ -1,8 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import "dotenv/config";
 
+import { getOutputTokenLimit } from "../../tokens/outputLimits.js";
+
 export const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
-export const DEFAULT_MAX_TOKENS = 8096;
+export const DEFAULT_MAX_TOKENS = getOutputTokenLimit("default");
 
 let clientInstance: Anthropic | null = null;
 

@@ -1,3 +1,7 @@
+import {
+  DEFAULT_MAX_RESULT_SIZE_CHARS,
+  truncateToolResult,
+} from "../tokens/truncation.js";
 import type { Tool, ToolContext } from "../tools/Tool.js";
 import type {
   AssistantMessage,
@@ -24,10 +28,11 @@ export async function executeSingleTool(
 
   try {
     const output = await tool.call(toolUse.input, context);
+    const maxChars = tool.maxResultSizeChars ?? DEFAULT_MAX_RESULT_SIZE_CHARS;
     return {
       type: "tool_result",
       tool_use_id: toolUse.id,
-      content: output.content,
+      content: truncateToolResult(output.content, maxChars),
       is_error: output.isError,
     };
   } catch (error) {

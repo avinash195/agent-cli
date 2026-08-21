@@ -16,8 +16,6 @@ export {
   findPreservedTailStart,
   parseCompactCommand,
   formatCompactResult,
-  AUTO_COMPACT_RATIO,
-  DEFAULT_MAX_CONTEXT_TOKENS,
   TAIL_PRESERVE_COUNT,
   COMPACT_BOUNDARY,
   type CompactOptions,

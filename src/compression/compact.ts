@@ -1,10 +1,10 @@
 import { getClient, getModel } from "../services/api/client.js";
+import { checkBudget } from "../tokens/budgetThresholds.js";
+import { getOutputTokenLimit } from "../tokens/outputLimits.js";
 import type { Message } from "../types/message.js";
 import { hasToolResult, hasToolUse } from "./microCompact.js";
 import { tokenCountWithEstimation } from "./tokens.js";
 
-export const AUTO_COMPACT_RATIO = 0.83;
-export const DEFAULT_MAX_CONTEXT_TOKENS = 200_000;
 export const TAIL_PRESERVE_COUNT = 8;
 export const COMPACT_BOUNDARY = "---[CompactBoundary]---";
 
@@ -18,7 +18,7 @@ const COMPRESSION_SYSTEM_PROMPT = `You are a conversation summarizer. Produce a 
 Format as markdown with sections. Be thorough but concise. Do NOT use tools.`;
 
 export interface CompactOptions {
-  maxContextTokens: number;
+  maxContextTokens?: number;
   focusDirective?: string;
   force?: boolean;
   lastUsage?: { inputTokens: number };
@@ -44,12 +44,13 @@ export function shouldAutoCompact(
 ): boolean {
   if (options.force) return true;
 
+  const model = options.model ?? getModel();
   const tokenCount = tokenCountWithEstimation(messages, {
     lastUsage: options.lastUsage,
     usageAnchorIndex: options.usageAnchorIndex,
   });
-
-  return tokenCount > options.maxContextTokens * AUTO_COMPACT_RATIO;
+  const status = checkBudget(tokenCount, model);
+  return status === "error" || status === "blocking";
 }
 
 export function findPreservedTailStart(messages: Message[]): number {
@@ -171,7 +172,7 @@ async function generateCompression(
   const client = getClient();
   const response = await client.messages.create({
     model: model ?? getModel(),
-    max_tokens: 4096,
+    max_tokens: getOutputTokenLimit("compression"),
     system: COMPRESSION_SYSTEM_PROMPT,
     messages: [
       {

@@ -8,11 +8,8 @@ import type {
   Message,
 } from "../../types/message.js";
 
-import {
-  getClient,
-  getModel,
-  DEFAULT_MAX_TOKENS,
-} from "./client.js";
+import { getOutputTokenLimit } from "../../tokens/outputLimits.js";
+import { getClient, getModel } from "./client.js";
 import { renderSystemPrompt } from "../../context/systemPrompt.js";
 
 export interface StreamMessageOptions {
@@ -20,6 +17,7 @@ export interface StreamMessageOptions {
   systemPrompt?: string;
   model?: string;
   cwd?: string;
+  maxTokens?: number;
   tools?: Array<{
     name: string;
     description: string;
@@ -31,7 +29,7 @@ export async function* streamMessage(
   messages: Message[],
   options: StreamMessageOptions = {}
 ): AsyncGenerator<StreamEvent, StreamResult> {
-  const { signal, systemPrompt, model, cwd, tools } = options;
+  const { signal, systemPrompt, model, cwd, tools, maxTokens } = options;
   const client = getClient();
 
   const resolvedSystemPrompt =
@@ -40,7 +38,7 @@ export async function* streamMessage(
 
   const requestParams: Parameters<typeof client.messages.stream>[0] = {
     model: model ?? getModel(),
-    max_tokens: DEFAULT_MAX_TOKENS,
+    max_tokens: maxTokens ?? getOutputTokenLimit("default"),
     system: resolvedSystemPrompt,
     messages: messages.map((m) => ({
       role: m.role,

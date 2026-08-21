@@ -22,6 +22,7 @@ interface ToolCallInfo {
 interface DisplayMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  tone?: 'warning' | 'info' | 'blocking';
 }
 
 function getMessageText(message: Message): string {
@@ -217,6 +218,24 @@ export function App({
         break;
       }
 
+      case 'token_warning':
+        setDisplayMessages((prev) => [
+          ...prev,
+          {
+            role: 'system',
+            tone: event.level,
+            content: `[budget] ${event.message}`,
+          },
+        ]);
+        if (event.level === 'blocking') {
+          setErrorText(event.message);
+        }
+        break;
+
+      case 'stream_reset':
+        setStreamingText('');
+        break;
+
       case 'error':
         setErrorText(event.error.message);
         break;
@@ -323,7 +342,20 @@ export function App({
       {displayMessages.map((msg, i) => (
         <Box key={i} marginBottom={1} flexDirection="column">
           {msg.role === 'system' ? (
-            <Text dimColor>{msg.content}</Text>
+            <Text
+              color={
+                msg.tone === 'blocking'
+                  ? 'red'
+                  : msg.tone === 'warning'
+                    ? 'yellow'
+                    : msg.tone === 'info'
+                      ? 'cyan'
+                      : undefined
+              }
+              dimColor={!msg.tone}
+            >
+              {msg.content}
+            </Text>
           ) : (
             <Text
               bold

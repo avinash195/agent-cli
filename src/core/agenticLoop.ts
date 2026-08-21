@@ -1,13 +1,17 @@
-import {
-  DEFAULT_MAX_CONTEXT_TOKENS,
-  microCompact,
-  performCompaction,
-  shouldAutoCompact,
-  type CompactionResult,
-} from "../compression/index.js";
+import { microCompact, type CompactionResult } from "../compression/index.js";
 import { loadRules } from "../config/settings.js";
 import { executeSingleTool } from "./executeTool.js";
 import { streamMessage } from "../services/api/streaming.js";
+import { tokenCountWithEstimation } from "../compression/tokens.js";
+import {
+  checkBudget,
+  createCircuitBreaker,
+  handleBudgetStatus,
+  invalidateUsageAnchor,
+  getOutputTokenLimit,
+  type CircuitBreakerState,
+} from "../tokens/index.js";
+import { getModel } from "../services/api/client.js";
 import {
   evaluatePermission,
   SessionRules,
@@ -34,7 +38,8 @@ export type LoopTerminationReason =
   | "completed"
   | "aborted"
   | "model_error"
-  | "max_turns";
+  | "max_turns"
+  | "blocking_limit";
 
 export type LoopEvent =
   | { type: "text"; text: string }
@@ -65,6 +70,13 @@ export type LoopEvent =
       tokensAfter: number;
       result: CompactionResult;
     }
+  | {
+      type: "token_warning";
+      level: "warning" | "info" | "blocking";
+      tokenCount: number;
+      message: string;
+    }
+  | { type: "stream_reset" }
   | { type: "turn_complete"; turnCount: number; reason: string }
   | { type: "error"; error: Error };
 
@@ -89,9 +101,10 @@ export interface QueryOptions {
   rules?: PermissionRules;
   sessionRules?: SessionRules;
   permissionPrompt?: PermissionPromptFn;
-  maxContextTokens?: number;
   lastCallUsage?: { inputTokens: number };
   usageAnchorIndex?: number;
+  circuitBreaker?: CircuitBreakerState;
+  querySource?: string;
 }
 
 interface LoopState {
@@ -116,8 +129,11 @@ export async function* query(
     rules = loadRules(),
     sessionRules = new SessionRules(),
     permissionPrompt = createTerminalPermissionPrompt(),
-    maxContextTokens = DEFAULT_MAX_CONTEXT_TOKENS,
+    circuitBreaker = createCircuitBreaker(),
+    querySource = "user",
   } = options;
+
+  const resolvedModel = model ?? getModel();
 
   const effectiveMode = mode ?? rules.mode;
 
@@ -162,71 +178,118 @@ export async function* query(
 
     state.messages = microCompact(state.messages);
 
-    const compactOptions = {
-      maxContextTokens,
-      lastUsage: state.lastCallUsage,
-      usageAnchorIndex: state.usageAnchorIndex,
-      model,
-    };
+    if (state.turnCount > 1) {
+      const tokenEstimate = tokenCountWithEstimation(state.messages, {
+        lastUsage: state.lastCallUsage,
+        usageAnchorIndex: state.usageAnchorIndex,
+      });
+      const budgetStatus = checkBudget(tokenEstimate, resolvedModel);
 
-    if (shouldAutoCompact(state.messages, compactOptions)) {
-      try {
-        const result = await performCompaction(state.messages, compactOptions);
-        if (result.summary !== "") {
-          state.messages = result.messages;
-          state.lastCallUsage = undefined;
-          state.usageAnchorIndex = undefined;
+      if (budgetStatus === "blocking") {
+        yield {
+          type: "token_warning",
+          level: "blocking",
+          tokenCount: tokenEstimate,
+          message: "Context window limit reached. Use /compact to continue.",
+        };
+        yield {
+          type: "turn_complete",
+          turnCount: state.turnCount,
+          reason: "blocking_limit",
+        };
+        return finish("blocking_limit");
+      }
+
+      if (budgetStatus === "error") {
+        const budgetResult = await handleBudgetStatus(
+          budgetStatus,
+          circuitBreaker,
+          state.messages,
+          querySource,
+          resolvedModel
+        );
+
+        if (budgetResult.action === "compress" && budgetResult.compaction) {
+          state.messages = budgetResult.messages;
+          invalidateUsageAnchor(state);
           yield {
             type: "compaction",
-            tokensBefore: result.tokensBefore,
-            tokensAfter: result.tokensAfter,
-            result,
+            tokensBefore: budgetResult.compaction.tokensBefore,
+            tokensAfter: budgetResult.compaction.tokensAfter,
+            result: budgetResult.compaction,
+          };
+          yield {
+            type: "token_warning",
+            level: "info",
+            tokenCount: tokenCountWithEstimation(state.messages),
+            message: "Auto-compressed conversation to stay within budget.",
           };
         }
-      } catch (error) {
-        yield { type: "error", error: error as Error };
+      }
+
+      if (budgetStatus === "warning") {
+        yield {
+          type: "token_warning",
+          level: "warning",
+          tokenCount: tokenEstimate,
+          message: "Context is getting large. Consider running /compact.",
+        };
       }
     }
 
     let assistantMessage: AssistantMessage;
     let stopReason: string;
+    let outputLimit = getOutputTokenLimit("default");
+    let retriedForTruncation = false;
 
     try {
-      const stream = streamMessage(state.messages, {
-        systemPrompt,
-        model,
-        cwd,
-        tools: toolsApiParams,
-        signal: abortSignal,
-      });
+      while (true) {
+        const stream = streamMessage(state.messages, {
+          systemPrompt,
+          model: resolvedModel,
+          cwd,
+          tools: toolsApiParams,
+          signal: abortSignal,
+          maxTokens: outputLimit,
+        });
 
-      let streamResult = await stream.next();
+        let streamResult = await stream.next();
 
-      while (!streamResult.done) {
-        const event = streamResult.value;
+        while (!streamResult.done) {
+          const event = streamResult.value;
 
-        if (event.type === "text") {
-          yield { type: "text", text: event.text };
-        } else if (event.type === "tool_use_start") {
-          yield {
-            type: "tool_use_start",
-            id: event.id,
-            name: event.name,
-            input: event.input,
-          };
+          if (event.type === "text") {
+            yield { type: "text", text: event.text };
+          } else if (event.type === "tool_use_start") {
+            yield {
+              type: "tool_use_start",
+              id: event.id,
+              name: event.name,
+              input: event.input,
+            };
+          }
+
+          streamResult = await stream.next();
         }
 
-        streamResult = await stream.next();
-      }
+        assistantMessage = streamResult.value.assistantMessage;
+        stopReason = streamResult.value.stopReason;
+        totalUsage.inputTokens += streamResult.value.usage.inputTokens;
+        totalUsage.outputTokens += streamResult.value.usage.outputTokens;
+        state.lastCallUsage = {
+          inputTokens: streamResult.value.usage.inputTokens,
+        };
+        state.usageAnchorIndex = state.messages.length - 1;
 
-      assistantMessage = streamResult.value.assistantMessage;
-      stopReason = streamResult.value.stopReason;
-      totalUsage.inputTokens += streamResult.value.usage.inputTokens;
-      totalUsage.outputTokens += streamResult.value.usage.outputTokens;
-      state.lastCallUsage = {
-        inputTokens: streamResult.value.usage.inputTokens,
-      };
-      state.usageAnchorIndex = state.messages.length - 1;
+        if (stopReason === "max_tokens" && !retriedForTruncation) {
+          retriedForTruncation = true;
+          outputLimit = getOutputTokenLimit("truncationRetry");
+          yield { type: "stream_reset" };
+          continue;
+        }
+
+        break;
+      }
     } catch (error) {
       yield { type: "error", error: error as Error };
       return finish("model_error");

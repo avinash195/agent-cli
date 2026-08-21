@@ -136,6 +136,7 @@ export async function executeBash(
 
 export const bashTool: Tool = {
   name: "bash",
+  maxResultSizeChars: 200_000,
 
   description:
     "Execute a shell command. Commands run in the project root directory.",

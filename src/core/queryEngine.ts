@@ -1,11 +1,11 @@
 import crypto from "crypto";
 
 import {
-  DEFAULT_MAX_CONTEXT_TOKENS,
   formatCompactResult,
   parseCompactCommand,
   performCompaction,
 } from "../compression/index.js";
+import { tokenCountWithEstimation } from "../compression/tokens.js";
 import { formatSessionList, listSessions } from "../commands/history.js";
 import {
   appendCompactionToTranscript,
@@ -15,7 +15,7 @@ import type { TranscriptEntry } from "../persistence/types.js";
 import { renderSystemPrompt } from "../context/systemPrompt.js";
 import { query, type LoopEvent, type LoopResult } from "./agenticLoop.js";
 import { getAllTools } from "../tools/index.js";
-import { DEFAULT_MODEL } from "../services/api/client.js";
+import { getModel } from "../services/api/client.js";
 import { SessionRules } from "../permissions/permissions.js";
 import type {
   AssistantMessage,
@@ -23,6 +23,14 @@ import type {
   UserMessage,
 } from "../types/message.js";
 import type { PermissionPromptFn } from "../ui/confirmationPrompt.js";
+import {
+  checkBudget,
+  createCircuitBreaker,
+  getEffectiveWindow,
+  handleBudgetStatus,
+  recordCompressionFailure,
+  recordCompressionSuccess,
+} from "../tokens/index.js";
 
 interface Usage {
   inputTokens: number;
@@ -55,13 +63,13 @@ export class QueryEngine {
   private readonly sessionRules = new SessionRules();
   private readonly sessionId: string;
   private readonly persistenceEnabled: boolean;
-  private readonly maxContextTokens: number;
   private ignoreMemory = false;
   private lastCallUsage?: { inputTokens: number };
   private usageAnchorIndex?: number;
+  private readonly circuitBreaker = createCircuitBreaker();
 
   constructor(options: QueryEngineOptions = {}) {
-    this.defaultModel = options.defaultModel ?? DEFAULT_MODEL;
+    this.defaultModel = options.defaultModel ?? getModel();
     this.cwd = options.cwd ?? process.cwd();
     this.permissionPrompt = options.permissionPrompt;
     this.messages = options.initialMessages ?? [];
@@ -71,7 +79,6 @@ export class QueryEngine {
     };
     this.sessionId = options.sessionId ?? crypto.randomUUID();
     this.persistenceEnabled = options.persist ?? true;
-    this.maxContextTokens = DEFAULT_MAX_CONTEXT_TOKENS;
   }
 
   getActiveModel(): string {
@@ -98,6 +105,13 @@ export class QueryEngine {
     this.abortController?.abort();
   }
 
+  private estimateContextTokens(): number {
+    return tokenCountWithEstimation(this.messages, {
+      lastUsage: this.lastCallUsage,
+      usageAnchorIndex: this.usageAnchorIndex,
+    });
+  }
+
   async *submitMessage(input: string): AsyncGenerator<QueryEngineEvent> {
     if (input.startsWith("/")) {
       const result = await this.handleSlashCommand(input);
@@ -106,6 +120,19 @@ export class QueryEngine {
     }
 
     const userMessage: Message = { role: "user", content: input };
+    const model = this.getActiveModel();
+
+    const preCount = this.estimateContextTokens();
+    if (checkBudget(preCount, model) === "blocking") {
+      yield {
+        type: "token_warning",
+        level: "blocking",
+        tokenCount: preCount,
+        message: "Context window limit reached. Use /compact to continue.",
+      };
+      return;
+    }
+
     this.messages.push(userMessage);
 
     await this.writeEntry({
@@ -123,19 +150,78 @@ export class QueryEngine {
     });
     const tools = getAllTools();
 
+    const tokenCount = this.estimateContextTokens();
+    const budgetStatus = checkBudget(tokenCount, model);
+
+    if (budgetStatus === "blocking") {
+      yield {
+        type: "token_warning",
+        level: "blocking",
+        tokenCount,
+        message: "Context window limit reached. Use /compact to continue.",
+      };
+      this.abortController = null;
+      return;
+    }
+
+    if (budgetStatus === "warning") {
+      yield {
+        type: "token_warning",
+        level: "warning",
+        tokenCount,
+        message: "Context is getting large. Consider running /compact.",
+      };
+    }
+
+    if (budgetStatus === "error") {
+      const budgetResult = await handleBudgetStatus(
+        budgetStatus,
+        this.circuitBreaker,
+        this.messages,
+        "user",
+        model
+      );
+
+      if (budgetResult.action === "compress" && budgetResult.compaction) {
+        this.messages = budgetResult.messages;
+        this.lastCallUsage = undefined;
+        this.usageAnchorIndex = undefined;
+        if (this.persistenceEnabled) {
+          await appendCompactionToTranscript(
+            this.cwd,
+            this.sessionId,
+            budgetResult.compaction
+          );
+        }
+        yield {
+          type: "compaction",
+          tokensBefore: budgetResult.compaction.tokensBefore,
+          tokensAfter: budgetResult.compaction.tokensAfter,
+          result: budgetResult.compaction,
+        };
+        yield {
+          type: "token_warning",
+          level: "info",
+          tokenCount: this.estimateContextTokens(),
+          message: "Auto-compressed conversation to stay within budget.",
+        };
+      }
+    }
+
     const loop = query({
       messages: this.messages,
       tools,
       systemPrompt,
-      model: this.getActiveModel(),
+      model,
       maxTurns: 50,
       abortSignal: this.abortController.signal,
       cwd: this.cwd,
       permissionPrompt: this.permissionPrompt,
       sessionRules: this.sessionRules,
-      maxContextTokens: this.maxContextTokens,
       lastCallUsage: this.lastCallUsage,
       usageAnchorIndex: this.usageAnchorIndex,
+      circuitBreaker: this.circuitBreaker,
+      querySource: "user",
     });
 
     let result = await loop.next();
@@ -222,6 +308,15 @@ export class QueryEngine {
       });
     }
 
+    if (loopResult.terminationReason === "blocking_limit") {
+      await this.writeEntry({
+        type: "system",
+        timestamp: new Date().toISOString(),
+        level: "info",
+        event: "blocking_limit",
+      });
+    }
+
     this.abortController = null;
   }
 
@@ -283,6 +378,7 @@ export class QueryEngine {
         this.totalUsage = { inputTokens: 0, outputTokens: 0 };
         this.lastCallUsage = undefined;
         this.usageAnchorIndex = undefined;
+        this.circuitBreaker.consecutiveFailures = 0;
         await this.writeEntry({
           type: "system",
           timestamp: new Date().toISOString(),
@@ -379,28 +475,39 @@ export class QueryEngine {
       };
     }
 
-    const result = await performCompaction(this.messages, {
-      maxContextTokens: this.maxContextTokens,
-      focusDirective: command.focusDirective,
-      force: true,
-      lastUsage: this.lastCallUsage,
-      usageAnchorIndex: this.usageAnchorIndex,
-      model: this.getActiveModel(),
-    });
+    try {
+      const result = await performCompaction(this.messages, {
+        maxContextTokens: getEffectiveWindow(this.getActiveModel()),
+        focusDirective: command.focusDirective,
+        force: true,
+        lastUsage: this.lastCallUsage,
+        usageAnchorIndex: this.usageAnchorIndex,
+        model: this.getActiveModel(),
+      });
 
-    this.messages = result.messages;
-    this.lastCallUsage = undefined;
-    this.usageAnchorIndex = undefined;
+      this.messages = result.messages;
+      this.lastCallUsage = undefined;
+      this.usageAnchorIndex = undefined;
 
-    if (result.summary !== "") {
-      if (this.persistenceEnabled) {
-        await appendCompactionToTranscript(this.cwd, this.sessionId, result);
+      if (result.summary !== "") {
+        recordCompressionSuccess(this.circuitBreaker);
+        if (this.persistenceEnabled) {
+          await appendCompactionToTranscript(this.cwd, this.sessionId, result);
+        }
       }
-    }
 
-    return {
-      type: "slash_command_result",
-      output: formatCompactResult(result),
-    };
+      return {
+        type: "slash_command_result",
+        output: formatCompactResult(result),
+      };
+    } catch (error) {
+      recordCompressionFailure(this.circuitBreaker);
+      return {
+        type: "slash_command_result",
+        output: `Compression failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
   }
 }
