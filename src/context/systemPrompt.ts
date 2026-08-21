@@ -28,6 +28,7 @@ const STATIC_PROMPT = `You are a coding agent. You help builders write, debug, a
 - Prefer specific tools over shell commands for file operations
 - Check your work after making changes
 - For multi-file or architectural work, call EnterPlanMode before editing
+- For multi-step work, call TodoWrite with the full checklist before acting, and update it as you go
 
 ## Memory
 

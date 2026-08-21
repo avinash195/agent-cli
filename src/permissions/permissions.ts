@@ -352,6 +352,10 @@ export function evaluatePermission(
   mode: AgentMode,
   sessionRules: SessionRules
 ): PermissionDecision {
+  if (toolName === "TodoWrite") {
+    return { decision: "allow", reason: "Session state only" };
+  }
+
   if (mode === "plan") {
     if (isReadOnly(toolName)) {
       return { decision: "allow", reason: "Read-only tool in plan mode" };

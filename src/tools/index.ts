@@ -8,6 +8,7 @@ import { fileReadTool } from "./fileReadTool.js";
 import { globTool } from "./globTool.js";
 import { grepTool } from "./grepTool.js";
 import { memoryWriteTool } from "./memoryWriteTool.js";
+import { todoWriteTool } from "./todoWriteTool.js";
 import { writeTool } from "./writeTool.js";
 
 const allTools: Tool[] = [
@@ -20,14 +21,15 @@ const allTools: Tool[] = [
   globTool,
   enterPlanModeTool,
   exitPlanModeTool,
+  todoWriteTool,
 ];
 
 export function getTools(mode: AgentMode): Tool[] {
   const base = [fileReadTool, grepTool, globTool, bashTool];
 
   if (mode === "plan") {
-    return [...base, writeTool, editTool, exitPlanModeTool].filter((tool) =>
-      tool.isEnabled()
+    return [...base, writeTool, editTool, exitPlanModeTool, todoWriteTool].filter(
+      (tool) => tool.isEnabled()
     );
   }
 
@@ -37,6 +39,7 @@ export function getTools(mode: AgentMode): Tool[] {
     editTool,
     memoryWriteTool,
     enterPlanModeTool,
+    todoWriteTool,
   ].filter((tool) => tool.isEnabled());
 }
 
