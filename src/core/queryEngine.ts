@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { readFileSync } from "fs";
 
 import {
   formatCompactResult,
@@ -30,6 +31,10 @@ import type {
 } from "../types/message.js";
 import type { PermissionPromptFn } from "../ui/confirmationPrompt.js";
 import {
+  defaultPlanApprovalPrompt,
+  type PlanApprovalPromptFn,
+} from "../ui/planApproval.js";
+import {
   checkBudget,
   createCircuitBreaker,
   getEffectiveWindow,
@@ -52,6 +57,7 @@ export interface QueryEngineOptions {
   defaultModel?: string;
   cwd?: string;
   permissionPrompt?: PermissionPromptFn;
+  planApprovalPrompt?: PlanApprovalPromptFn;
   initialMessages?: Message[];
   initialUsage?: Usage;
   sessionId?: string;
@@ -66,6 +72,7 @@ export class QueryEngine {
   private abortController: AbortController | null = null;
   private readonly cwd: string;
   private readonly permissionPrompt?: PermissionPromptFn;
+  private readonly planApprovalPrompt: PlanApprovalPromptFn;
   private readonly sessionRules = new SessionRules();
   private readonly sessionId: string;
   private readonly persistenceEnabled: boolean;
@@ -82,6 +89,8 @@ export class QueryEngine {
     this.defaultModel = options.defaultModel ?? getModel();
     this.cwd = options.cwd ?? process.cwd();
     this.permissionPrompt = options.permissionPrompt;
+    this.planApprovalPrompt =
+      options.planApprovalPrompt ?? defaultPlanApprovalPrompt;
     this.messages = options.initialMessages ?? [];
     this.totalUsage = options.initialUsage ?? {
       inputTokens: 0,
@@ -246,6 +255,7 @@ export class QueryEngine {
       cwd: this.cwd,
       sessionId: this.sessionId,
       permissionPrompt: this.permissionPrompt,
+      planApprovalPrompt: this.planApprovalPrompt,
       sessionRules: this.sessionRules,
       lastCallUsage: this.lastCallUsage,
       usageAnchorIndex: this.usageAnchorIndex,
@@ -355,6 +365,27 @@ export class QueryEngine {
         level: "info",
         event: "blocking_limit",
       });
+    }
+
+    if (loopResult.terminationReason === "plan_accepted_clear") {
+      const acceptedPlanPath = this.planFilePath;
+      this.exitPlanMode();
+      this.messages = [];
+      this.lastCallUsage = undefined;
+      this.usageAnchorIndex = undefined;
+      this.abortController = null;
+
+      let planContent = "";
+      if (acceptedPlanPath) {
+        try {
+          planContent = readFileSync(acceptedPlanPath, "utf-8");
+        } catch {
+          planContent = "(plan file could not be read)";
+        }
+      }
+
+      yield* this.submitMessage(`Execute this plan:\n\n${planContent}`);
+      return;
     }
 
     this.abortController = null;

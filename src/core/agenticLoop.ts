@@ -30,17 +30,22 @@ import {
   createTerminalPermissionPrompt,
   inferPattern,
   summarizeToolCall,
-  type ConfirmationPrompt,
   type PermissionPromptFn,
-  type PermissionResponse,
 } from "../ui/confirmationPrompt.js";
+import {
+  defaultPlanApprovalPrompt,
+  getPlanModeAttachment,
+  type PlanApprovalOptions,
+  type PlanApprovalPromptFn,
+} from "../ui/planApproval.js";
 
 export type LoopTerminationReason =
   | "completed"
   | "aborted"
   | "model_error"
   | "max_turns"
-  | "blocking_limit";
+  | "blocking_limit"
+  | "plan_accepted_clear";
 
 export type LoopEvent =
   | { type: "text"; text: string }
@@ -112,6 +117,7 @@ export interface QueryOptions {
   setPermissionMode?: (mode: AgentMode) => void;
   getPlanFilePath?: () => string | null;
   requestPlanApproval?: ToolContext["requestPlanApproval"];
+  planApprovalPrompt?: PlanApprovalPromptFn;
 }
 
 interface LoopState {
@@ -141,6 +147,7 @@ export async function* query(
     setPermissionMode,
     getPlanFilePath,
     requestPlanApproval,
+    planApprovalPrompt = defaultPlanApprovalPrompt,
   } = options;
 
   const resolvedModel = model ?? getModel();
@@ -162,15 +169,21 @@ export async function* query(
     usageAnchorIndex: options.usageAnchorIndex,
   };
 
+  const pendingPlan: { value: PlanApprovalOptions | null } = { value: null };
+
   const toolContext: ToolContext = {
     cwd,
     abortSignal,
     sessionId,
     setPermissionMode,
     getPlanFilePath,
-    requestPlanApproval,
+    requestPlanApproval: (approval) => {
+      pendingPlan.value = approval;
+      requestPlanApproval?.(approval);
+    },
   };
   let totalUsage = { inputTokens: 0, outputTokens: 0 };
+  let planTurnCount = 0;
 
   const finish = (reason: LoopTerminationReason): LoopResult => ({
     messages: state.messages,
@@ -193,6 +206,14 @@ export async function* query(
     }
 
     state.turnCount++;
+
+    if (getMode() === "plan") {
+      state.messages.push({
+        role: "user",
+        content: getPlanModeAttachment(planTurnCount),
+      });
+      planTurnCount++;
+    }
 
     state.messages = microCompact(state.messages);
 
@@ -388,10 +409,6 @@ export async function* query(
         toolContext
       );
       toolResults.push(result);
-
-      if (toolCall.name === "ExitPlanMode") {
-        setPermissionMode?.("default");
-      }
     }
 
     const toolResultMessage: UserMessage = {
@@ -433,6 +450,50 @@ export async function* query(
 
     state.messages.push(toolResultMessage);
     yield { type: "tool_result_message", message: toolResultMessage };
+
+    const exitedPlan = toolUseBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "ExitPlanMode"
+    );
+
+    if (exitedPlan && pendingPlan.value) {
+      const submitted: PlanApprovalOptions = {
+        planPath: pendingPlan.value.planPath,
+        allowedPrompts: [...pendingPlan.value.allowedPrompts],
+      };
+      pendingPlan.value = null;
+      const approval = await planApprovalPrompt(submitted);
+
+      if (approval.type === "auto_accept_clear") {
+        for (const pattern of submitted.allowedPrompts) {
+          sessionRules.add(pattern);
+        }
+        yield {
+          type: "turn_complete",
+          turnCount: state.turnCount,
+          reason: "plan_accepted_clear",
+        };
+        return finish("plan_accepted_clear");
+      }
+
+      if (approval.type === "auto_accept_keep") {
+        for (const pattern of submitted.allowedPrompts) {
+          sessionRules.add(pattern);
+        }
+        setPermissionMode?.("default");
+      }
+
+      if (approval.type === "manual") {
+        setPermissionMode?.("default");
+      }
+
+      if (approval.type === "reject") {
+        state.messages.push({
+          role: "user",
+          content: approval.feedback,
+        });
+      }
+    }
+
     yield {
       type: "turn_complete",
       turnCount: state.turnCount,
