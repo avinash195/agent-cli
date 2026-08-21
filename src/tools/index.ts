@@ -8,8 +8,21 @@ import { fileReadTool } from "./fileReadTool.js";
 import { globTool } from "./globTool.js";
 import { grepTool } from "./grepTool.js";
 import { memoryWriteTool } from "./memoryWriteTool.js";
+import { taskCreateTool } from "./taskCreateTool.js";
+import { taskGetTool } from "./taskGetTool.js";
+import { taskListTool } from "./taskListTool.js";
+import { taskUpdateTool } from "./taskUpdateTool.js";
 import { todoWriteTool } from "./todoWriteTool.js";
 import { writeTool } from "./writeTool.js";
+
+export type TaskMode = "todo" | "task";
+
+const taskGraphTools: Tool[] = [
+  taskCreateTool,
+  taskUpdateTool,
+  taskListTool,
+  taskGetTool,
+];
 
 const allTools: Tool[] = [
   fileReadTool,
@@ -22,25 +35,31 @@ const allTools: Tool[] = [
   enterPlanModeTool,
   exitPlanModeTool,
   todoWriteTool,
+  ...taskGraphTools,
 ];
 
-export function getTools(mode: AgentMode): Tool[] {
+function withTrackingTools(tools: Tool[], taskMode: TaskMode): Tool[] {
+  const tracking = taskMode === "task" ? taskGraphTools : [todoWriteTool];
+  return [...tools, ...tracking].filter((tool) => tool.isEnabled());
+}
+
+export function getTools(
+  mode: AgentMode,
+  taskMode: TaskMode = "todo"
+): Tool[] {
   const base = [fileReadTool, grepTool, globTool, bashTool];
 
   if (mode === "plan") {
-    return [...base, writeTool, editTool, exitPlanModeTool, todoWriteTool].filter(
-      (tool) => tool.isEnabled()
+    return withTrackingTools(
+      [...base, writeTool, editTool, exitPlanModeTool],
+      taskMode
     );
   }
 
-  return [
-    ...base,
-    writeTool,
-    editTool,
-    memoryWriteTool,
-    enterPlanModeTool,
-    todoWriteTool,
-  ].filter((tool) => tool.isEnabled());
+  return withTrackingTools(
+    [...base, writeTool, editTool, memoryWriteTool, enterPlanModeTool],
+    taskMode
+  );
 }
 
 export function getAllTools(): Tool[] {

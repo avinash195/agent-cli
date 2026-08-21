@@ -15,7 +15,7 @@ import {
 import type { TranscriptEntry } from "../persistence/types.js";
 import { renderSystemPrompt } from "../context/systemPrompt.js";
 import { query, type LoopEvent, type LoopResult } from "./agenticLoop.js";
-import { getTools } from "../tools/index.js";
+import { getTools, type TaskMode } from "../tools/index.js";
 import { getModel } from "../services/api/client.js";
 import {
   SessionRules,
@@ -23,6 +23,7 @@ import {
 } from "../permissions/permissions.js";
 import { loadRules } from "../config/settings.js";
 import { planFilePath } from "../persistence/paths.js";
+import { resetTaskGraph } from "../tasks/taskGraph.js";
 import type { PlanApprovalRequest } from "../tools/Tool.js";
 import type {
   AssistantMessage,
@@ -82,6 +83,7 @@ export class QueryEngine {
   private readonly circuitBreaker = createCircuitBreaker();
   private permissionMode: AgentMode;
   private prePlanMode: AgentMode;
+  private taskMode: TaskMode = "todo";
   private planFilePath: string | null = null;
   private pendingApproval: PlanApprovalRequest | null = null;
 
@@ -104,6 +106,10 @@ export class QueryEngine {
 
   getPermissionMode(): AgentMode {
     return this.permissionMode;
+  }
+
+  getTaskMode(): TaskMode {
+    return this.taskMode;
   }
 
   enterPlanMode(): void {
@@ -246,7 +252,7 @@ export class QueryEngine {
 
     const loop = query({
       messages: this.messages,
-      getTools,
+      getTools: (mode) => getTools(mode, this.taskMode),
       getMode: () => this.permissionMode,
       systemPrompt,
       model,
@@ -419,6 +425,7 @@ export class QueryEngine {
             "  /model [name]   View or change model",
             "  /history        List past sessions for this project",
             "  /memory on|off  Enable or disable memory injection",
+            "  /tasks [todo|task|reset]  Checklist mode, task graph, or reset graph",
           ].join("\n"),
         };
         break;
@@ -485,6 +492,10 @@ export class QueryEngine {
         break;
       }
 
+      case "/tasks":
+        result = this.handleTasksCommand(arg);
+        break;
+
       case "/compact":
         result = await this.handleCompactCommand(input);
         break;
@@ -529,6 +540,37 @@ export class QueryEngine {
     return {
       type: "slash_command_result",
       output: `Model set to: ${arg} (session override)`,
+    };
+  }
+
+  private handleTasksCommand(arg: string): QueryEngineEvent {
+    const subcommand = arg.trim().split(/\s+/)[0];
+
+    if (subcommand === "task" || subcommand === "todo") {
+      this.taskMode = subcommand;
+      return {
+        type: "slash_command_result",
+        output: `Switched to ${subcommand} mode.`,
+      };
+    }
+
+    if (subcommand === "reset") {
+      if (this.taskMode === "todo") {
+        return {
+          type: "slash_command_result",
+          output: "Use /clear to reset the in-memory checklist.",
+        };
+      }
+      resetTaskGraph(this.sessionId);
+      return {
+        type: "slash_command_result",
+        output: "Task graph cleared.",
+      };
+    }
+
+    return {
+      type: "slash_command_result",
+      output: `Current mode: ${this.taskMode}. Use /tasks task or /tasks todo to switch.`,
     };
   }
 

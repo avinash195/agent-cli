@@ -352,8 +352,14 @@ export function evaluatePermission(
   mode: AgentMode,
   sessionRules: SessionRules
 ): PermissionDecision {
-  if (toolName === "TodoWrite") {
-    return { decision: "allow", reason: "Session state only" };
+  if (
+    toolName === "TodoWrite" ||
+    toolName === "TaskCreate" ||
+    toolName === "TaskUpdate" ||
+    toolName === "TaskList" ||
+    toolName === "TaskGet"
+  ) {
+    return { decision: "allow", reason: "Session task state only" };
   }
 
   if (mode === "plan") {
