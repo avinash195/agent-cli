@@ -375,6 +375,8 @@ export class QueryEngine {
       this.usageAnchorIndex = undefined;
       this.abortController = null;
 
+      yield { type: "session_cleared" };
+
       let planContent = "";
       if (acceptedPlanPath) {
         try {

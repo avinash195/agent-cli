@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { readFileSync } from 'fs';
 import { Box, Text, useApp, useInput } from 'ink';
 
 import { QueryEngine } from '../core/queryEngine.js';
@@ -9,6 +10,11 @@ import type {
   ConfirmationPrompt,
   PermissionResponse,
 } from './confirmationPrompt.js';
+import {
+  isPlanModeAttachment,
+  type ApprovalDecision,
+  type PlanApprovalOptions,
+} from './planApproval.js';
 import type { Message } from '../types/message.js';
 
 interface ToolCallInfo {
@@ -41,6 +47,7 @@ function messagesToDisplay(messages: Message[]): DisplayMessage[] {
   for (const msg of messages) {
     if (msg.role === 'user') {
       if (typeof msg.content === 'string') {
+        if (isPlanModeAttachment(msg.content)) continue;
         result.push({ role: 'user', content: msg.content });
       }
     } else {
@@ -86,11 +93,20 @@ export function App({
   const [errorText, setErrorText] = useState('');
   const [pendingPermission, setPendingPermission] =
     useState<ConfirmationPrompt | null>(null);
+  const [pendingPlan, setPendingPlan] = useState<PlanApprovalOptions | null>(
+    null
+  );
+  const [planFeedbackMode, setPlanFeedbackMode] = useState(false);
+  const [inPlanMode, setInPlanMode] = useState(false);
 
   const pendingPermissionRef = useRef<ConfirmationPrompt | null>(null);
   const permissionResolverRef = useRef<
     ((response: PermissionResponse) => void) | null
   >(null);
+  const pendingPlanRef = useRef<PlanApprovalOptions | null>(null);
+  const planResolverRef = useRef<((decision: ApprovalDecision) => void) | null>(
+    null
+  );
 
   const permissionPrompt = useRef(
     (prompt: ConfirmationPrompt): Promise<PermissionResponse> =>
@@ -101,11 +117,22 @@ export function App({
       })
   ).current;
 
+  const planApprovalPrompt = useRef(
+    (options: PlanApprovalOptions): Promise<ApprovalDecision> =>
+      new Promise((resolve) => {
+        planResolverRef.current = resolve;
+        pendingPlanRef.current = options;
+        setPlanFeedbackMode(false);
+        setPendingPlan(options);
+      })
+  ).current;
+
   const engine = useRef(
     new QueryEngine({
       defaultModel: getModel(),
       cwd: process.cwd(),
       permissionPrompt,
+      planApprovalPrompt,
       initialMessages,
       initialUsage,
       sessionId,
@@ -119,7 +146,17 @@ export function App({
     setPendingPermission(null);
   }
 
+  function resolvePlan(decision: ApprovalDecision) {
+    planResolverRef.current?.(decision);
+    planResolverRef.current = null;
+    pendingPlanRef.current = null;
+    setPendingPlan(null);
+    setPlanFeedbackMode(false);
+  }
+
   function handleEvent(event: QueryEngineEvent) {
+    setInPlanMode(engine.getPermissionMode() === 'plan');
+
     switch (event.type) {
       case 'text':
         setStreamingText((prev) => prev + event.text);
@@ -271,13 +308,52 @@ export function App({
       setIsLoading(false);
       setStreamingText('');
       setToolCalls([]);
-      pendingPermissionRef.current = null;
       setPendingPermission(null);
       permissionResolverRef.current = null;
+      pendingPlanRef.current = null;
+      setPendingPlan(null);
+      setPlanFeedbackMode(false);
+      planResolverRef.current = null;
+      setInPlanMode(engine.getPermissionMode() === 'plan');
     }
   }
 
   useInput((input, key) => {
+    if (pendingPlanRef.current) {
+      if (planFeedbackMode) {
+        if (key.return) {
+          resolvePlan({
+            type: 'reject',
+            feedback: inputValue.trim() || 'Please revise the plan.',
+          });
+          setInputValue('');
+          return;
+        }
+        if (key.backspace) {
+          setInputValue((prev) => prev.slice(0, -1));
+          return;
+        }
+        if (input && !key.ctrl && !key.meta) {
+          setInputValue((prev) => prev + input);
+        }
+        return;
+      }
+
+      if (input === '1') {
+        resolvePlan({ type: 'auto_accept_clear' });
+      } else if (input === '2') {
+        resolvePlan({ type: 'auto_accept_keep' });
+      } else if (input === '3') {
+        resolvePlan({ type: 'manual' });
+      } else if (input === '4') {
+        setPlanFeedbackMode(true);
+        setInputValue('');
+      } else if (key.ctrl && input === 'c') {
+        resolvePlan({ type: 'manual' });
+      }
+      return;
+    }
+
     if (pendingPermissionRef.current) {
       const choice = (input || '').toLowerCase();
       if (choice === 'y') {
@@ -336,6 +412,7 @@ export function App({
           {' '}
           v0.1.0 · {activeModel}
           {sessionId ? ` · ${sessionId.slice(0, 8)}` : ''}
+          {inPlanMode ? ' · plan' : ''}
         </Text>
       </Box>
 
@@ -412,9 +489,19 @@ export function App({
         </Box>
       )}
 
-      {isLoading && !streamingText && toolCalls.length === 0 && !pendingPermission && (
-        <Spinner />
+      {pendingPlan && (
+        <PlanApprovalBox
+          options={pendingPlan}
+          feedbackMode={planFeedbackMode}
+          feedbackValue={inputValue}
+        />
       )}
+
+      {isLoading &&
+        !streamingText &&
+        toolCalls.length === 0 &&
+        !pendingPermission &&
+        !pendingPlan && <Spinner />}
 
       {streamingText && (
         <Box marginBottom={1}>
@@ -437,7 +524,7 @@ export function App({
         </Box>
       )}
 
-      {!isLoading && !pendingPermission && (
+      {!isLoading && !pendingPermission && !pendingPlan && (
         <Box>
           <Text color="green" bold>
             {'> '}
@@ -446,6 +533,75 @@ export function App({
           <Text color="gray">█</Text>
         </Box>
       )}
+    </Box>
+  );
+}
+
+function readPlanContent(planPath: string): string {
+  try {
+    return readFileSync(planPath, 'utf-8');
+  } catch {
+    return '(plan file could not be read)';
+  }
+}
+
+function PlanApprovalBox({
+  options,
+  feedbackMode,
+  feedbackValue,
+}: {
+  options: PlanApprovalOptions;
+  feedbackMode: boolean;
+  feedbackValue: string;
+}) {
+  const planContent = readPlanContent(options.planPath);
+
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="cyan"
+      paddingX={1}
+      marginY={1}
+    >
+      <Text color="cyan" bold>
+        Plan
+      </Text>
+      <Text>{planContent}</Text>
+      {options.allowedPrompts.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          <Text dimColor>Auto-allow patterns:</Text>
+          {options.allowedPrompts.map((pattern) => (
+            <Text key={pattern} dimColor>
+              {'  '}
+              {pattern}
+            </Text>
+          ))}
+        </Box>
+      )}
+      <Box marginTop={1} flexDirection="column">
+        {feedbackMode ? (
+          <Box>
+            <Text>Feedback: {feedbackValue}</Text>
+            <Text color="gray">█</Text>
+          </Box>
+        ) : (
+          <>
+            <Text>
+              <Text color="green">[1]</Text> Auto-accept (clear context)
+            </Text>
+            <Text>
+              <Text color="green">[2]</Text> Auto-accept (keep context)
+            </Text>
+            <Text>
+              <Text color="yellow">[3]</Text> Manually approve each edit
+            </Text>
+            <Text>
+              <Text color="red">[4]</Text> Reject with feedback
+            </Text>
+          </>
+        )}
+      </Box>
     </Box>
   );
 }
