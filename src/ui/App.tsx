@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { readFileSync } from 'fs';
 import { Box, Text, useApp, useInput } from 'ink';
 
@@ -16,6 +16,8 @@ import {
   type PlanApprovalOptions,
 } from './planApproval.js';
 import type { Message } from '../types/message.js';
+import { todoStore } from '../tasks/todoStore.js';
+import type { TodoItem } from '../tasks/todoTypes.js';
 
 interface ToolCallInfo {
   id: string;
@@ -98,6 +100,8 @@ export function App({
   );
   const [planFeedbackMode, setPlanFeedbackMode] = useState(false);
   const [inPlanMode, setInPlanMode] = useState(false);
+  const [taskMode, setTaskMode] = useState<'todo' | 'task'>('todo');
+  const [todos, setTodos] = useState<TodoItem[]>([]);
 
   const pendingPermissionRef = useRef<ConfirmationPrompt | null>(null);
   const permissionResolverRef = useRef<
@@ -138,6 +142,13 @@ export function App({
       sessionId,
     })
   ).current;
+
+  useEffect(() => {
+    const id = engine.getSessionId();
+    setTodos(todoStore.get(id));
+    setTaskMode(engine.getTaskMode());
+    return todoStore.subscribe(id, setTodos);
+  }, [engine]);
 
   function resolvePermission(response: PermissionResponse) {
     permissionResolverRef.current?.(response);
@@ -227,6 +238,7 @@ export function App({
           { role: 'system', content: event.output },
         ]);
         setActiveModel(engine.getActiveModel());
+        setTaskMode(engine.getTaskMode());
         break;
 
       case 'session_cleared':
@@ -236,6 +248,7 @@ export function App({
         setErrorText('');
         setLastUsage(null);
         setActiveModel(engine.getActiveModel());
+        setTodos([]);
         break;
 
       case 'compaction': {
@@ -413,8 +426,24 @@ export function App({
           v0.1.0 · {activeModel}
           {sessionId ? ` · ${sessionId.slice(0, 8)}` : ''}
           {inPlanMode ? ' · plan' : ''}
+          {taskMode === 'task' ? ' · tasks' : ''}
         </Text>
       </Box>
+
+      {todos.length > 0 && (
+        <Box flexDirection="column" marginBottom={1}>
+          {todos.map((todo, i) => (
+            <Text key={`${todo.content}-${i}`} dimColor={todo.status === 'pending'}>
+              {todo.status === 'completed'
+                ? '[x] '
+                : todo.status === 'in_progress'
+                  ? '[>] '
+                  : '[ ] '}
+              {todo.content}
+            </Text>
+          ))}
+        </Box>
+      )}
 
       {displayMessages.map((msg, i) => (
         <Box key={i} marginBottom={1} flexDirection="column">

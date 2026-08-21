@@ -24,6 +24,7 @@ import {
 import { loadRules } from "../config/settings.js";
 import { planFilePath } from "../persistence/paths.js";
 import { resetTaskGraph } from "../tasks/taskGraph.js";
+import { todoStore } from "../tasks/todoStore.js";
 import type { PlanApprovalRequest } from "../tools/Tool.js";
 import type {
   AssistantMessage,
@@ -419,7 +420,7 @@ export class QueryEngine {
           output: [
             "Available commands:",
             "  /help           Show this message",
-            "  /clear          Reset conversation history",
+            "  /clear          Reset conversation history and the in-memory checklist",
             "  /cost           Show cumulative token usage",
             "  /compact [focus] Compress conversation history",
             "  /model [name]   View or change model",
@@ -459,6 +460,7 @@ export class QueryEngine {
         this.lastCallUsage = undefined;
         this.usageAnchorIndex = undefined;
         this.circuitBreaker.consecutiveFailures = 0;
+        todoStore.set(this.sessionId, []);
         await this.writeEntry({
           type: "system",
           timestamp: new Date().toISOString(),
