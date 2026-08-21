@@ -1,6 +1,7 @@
 import { writeFile, mkdir, access } from "fs/promises";
 import { dirname } from "path";
 
+import { plansDir } from "../persistence/paths.js";
 import { validatePath } from "../utils/paths.js";
 import type { Tool, ToolContext, ToolResult } from "./Tool.js";
 
@@ -42,7 +43,7 @@ export const writeTool: Tool = {
     const content = input.content as string;
 
     try {
-      const resolved = validatePath(filePath, context.cwd);
+      const resolved = validatePath(filePath, context.cwd, [plansDir()]);
       const existed = await fileExists(resolved);
 
       await mkdir(dirname(resolved), { recursive: true });

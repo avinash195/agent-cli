@@ -28,4 +28,12 @@ export function memoryDir(cwd: string): string {
   return path.join(AGENT_HOME, "projects", hash, "memory");
 }
 
+export function plansDir(): string {
+  return path.join(AGENT_HOME, "plans");
+}
+
+export function planFilePath(sessionId: string): string {
+  return path.join(plansDir(), `${sessionId}.md`);
+}
+
 export { AGENT_HOME };

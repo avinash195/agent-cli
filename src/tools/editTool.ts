@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "fs/promises";
 
+import { plansDir } from "../persistence/paths.js";
 import { validatePath } from "../utils/paths.js";
 import type { Tool, ToolContext, ToolResult } from "./Tool.js";
 
@@ -44,7 +45,7 @@ export const editTool: Tool = {
     const newString = input.new_string as string;
 
     try {
-      const resolved = validatePath(filePath, context.cwd);
+      const resolved = validatePath(filePath, context.cwd, [plansDir()]);
 
       let content = await readFile(resolved, "utf-8");
       const oldStr = normalizeQuotes(oldString);

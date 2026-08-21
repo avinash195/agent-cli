@@ -1,3 +1,8 @@
+import path from "path";
+
+import { plansDir } from "../persistence/paths.js";
+import { expandHome } from "../utils/paths.js";
+
 export type AgentMode = "default" | "plan" | "auto";
 
 export type PermissionDecisionType = "allow" | "ask" | "deny";
@@ -94,6 +99,22 @@ export const DEFAULT_DENY_PATTERNS: DenyRule[] = [
 
 export function isReadOnly(toolName: string): boolean {
   return READ_ONLY_TOOLS.has(toolName);
+}
+
+export function isPlanFileWrite(
+  toolName: string,
+  toolInput: Record<string, unknown>
+): boolean {
+  if (toolName !== "write_file" && toolName !== "edit_file") return false;
+
+  const filePath = toolInput.file_path as string | undefined;
+  if (!filePath) return false;
+
+  const expanded = expandHome(filePath);
+  const resolved = path.resolve(expanded);
+  const plans = plansDir();
+  const rel = path.relative(plans, resolved);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
 export function globToRegExp(pattern: string): RegExp {
@@ -335,6 +356,19 @@ export function evaluatePermission(
     if (isReadOnly(toolName)) {
       return { decision: "allow", reason: "Read-only tool in plan mode" };
     }
+
+    if (isPlanFileWrite(toolName, toolInput)) {
+      return { decision: "allow", reason: "Writing to plan file" };
+    }
+
+    if (toolName === "bash" && isBashReadOnly(toolInput.command as string)) {
+      return { decision: "allow", reason: "Read-only command in plan mode" };
+    }
+
+    if (toolName === "ExitPlanMode") {
+      return { decision: "allow", reason: "Exiting plan mode" };
+    }
+
     return { decision: "deny", reason: "Plan mode: write operations blocked" };
   }
 

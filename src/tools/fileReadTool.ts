@@ -1,6 +1,7 @@
 import { readFile } from "fs/promises";
 
 import { getMemoryDir } from "../memory/loader.js";
+import { plansDir } from "../persistence/paths.js";
 import { validatePath } from "../utils/paths.js";
 import type { Tool, ToolContext, ToolResult } from "./Tool.js";
 
@@ -73,6 +74,7 @@ export const fileReadTool: Tool = {
     try {
       const absolutePath = validatePath(filePath, context.cwd, [
         getMemoryDir(context.cwd),
+        plansDir(),
       ]);
 
       const content = await readFile(absolutePath, "utf-8");
