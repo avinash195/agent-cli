@@ -14,9 +14,15 @@ import {
 import type { TranscriptEntry } from "../persistence/types.js";
 import { renderSystemPrompt } from "../context/systemPrompt.js";
 import { query, type LoopEvent, type LoopResult } from "./agenticLoop.js";
-import { getAllTools } from "../tools/index.js";
+import { getTools } from "../tools/index.js";
 import { getModel } from "../services/api/client.js";
-import { SessionRules } from "../permissions/permissions.js";
+import {
+  SessionRules,
+  type AgentMode,
+} from "../permissions/permissions.js";
+import { loadRules } from "../config/settings.js";
+import { planFilePath } from "../persistence/paths.js";
+import type { PlanApprovalRequest } from "../tools/Tool.js";
 import type {
   AssistantMessage,
   Message,
@@ -67,6 +73,10 @@ export class QueryEngine {
   private lastCallUsage?: { inputTokens: number };
   private usageAnchorIndex?: number;
   private readonly circuitBreaker = createCircuitBreaker();
+  private permissionMode: AgentMode;
+  private prePlanMode: AgentMode;
+  private planFilePath: string | null = null;
+  private pendingApproval: PlanApprovalRequest | null = null;
 
   constructor(options: QueryEngineOptions = {}) {
     this.defaultModel = options.defaultModel ?? getModel();
@@ -79,6 +89,24 @@ export class QueryEngine {
     };
     this.sessionId = options.sessionId ?? crypto.randomUUID();
     this.persistenceEnabled = options.persist ?? true;
+    this.permissionMode = loadRules().mode;
+    this.prePlanMode = this.permissionMode;
+  }
+
+  getPermissionMode(): AgentMode {
+    return this.permissionMode;
+  }
+
+  enterPlanMode(): void {
+    this.prePlanMode = this.permissionMode;
+    this.permissionMode = "plan";
+    this.planFilePath = planFilePath(this.sessionId);
+  }
+
+  exitPlanMode(): void {
+    this.permissionMode = this.prePlanMode;
+    this.planFilePath = null;
+    this.pendingApproval = null;
   }
 
   getActiveModel(): string {
@@ -148,7 +176,6 @@ export class QueryEngine {
       cwd: this.cwd,
       ignoreMemory: this.ignoreMemory,
     });
-    const tools = getAllTools();
 
     const tokenCount = this.estimateContextTokens();
     const budgetStatus = checkBudget(tokenCount, model);
@@ -210,18 +237,31 @@ export class QueryEngine {
 
     const loop = query({
       messages: this.messages,
-      tools,
+      getTools,
+      getMode: () => this.permissionMode,
       systemPrompt,
       model,
       maxTurns: 50,
       abortSignal: this.abortController.signal,
       cwd: this.cwd,
+      sessionId: this.sessionId,
       permissionPrompt: this.permissionPrompt,
       sessionRules: this.sessionRules,
       lastCallUsage: this.lastCallUsage,
       usageAnchorIndex: this.usageAnchorIndex,
       circuitBreaker: this.circuitBreaker,
       querySource: "user",
+      setPermissionMode: (nextMode) => {
+        if (nextMode === "plan") {
+          this.enterPlanMode();
+        } else {
+          this.exitPlanMode();
+        }
+      },
+      getPlanFilePath: () => this.planFilePath,
+      requestPlanApproval: (options) => {
+        this.pendingApproval = options;
+      },
     });
 
     let result = await loop.next();

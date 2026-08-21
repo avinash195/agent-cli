@@ -18,6 +18,7 @@ import {
   type AgentMode,
   type PermissionRules,
 } from "../permissions/permissions.js";
+import { getTools } from "../tools/index.js";
 import type { Tool, ToolContext } from "../tools/Tool.js";
 import type {
   AssistantMessage,
@@ -91,12 +92,15 @@ export interface LoopResult {
 
 export interface QueryOptions {
   messages: Message[];
-  tools: Tool[];
+  tools?: Tool[];
+  getTools?: (mode: AgentMode) => Tool[];
+  getMode?: () => AgentMode;
   systemPrompt?: string;
   model?: string;
   maxTurns?: number;
   abortSignal?: AbortSignal;
   cwd?: string;
+  sessionId?: string;
   mode?: AgentMode;
   rules?: PermissionRules;
   sessionRules?: SessionRules;
@@ -105,6 +109,9 @@ export interface QueryOptions {
   usageAnchorIndex?: number;
   circuitBreaker?: CircuitBreakerState;
   querySource?: string;
+  setPermissionMode?: (mode: AgentMode) => void;
+  getPlanFilePath?: () => string | null;
+  requestPlanApproval?: ToolContext["requestPlanApproval"];
 }
 
 interface LoopState {
@@ -119,23 +126,33 @@ export async function* query(
   options: QueryOptions
 ): AsyncGenerator<LoopEvent, LoopResult> {
   const {
-    tools,
     systemPrompt,
     model,
     maxTurns = 50,
     abortSignal,
     cwd = process.cwd(),
+    sessionId,
     mode,
     rules = loadRules(),
     sessionRules = new SessionRules(),
     permissionPrompt = createTerminalPermissionPrompt(),
     circuitBreaker = createCircuitBreaker(),
     querySource = "user",
+    setPermissionMode,
+    getPlanFilePath,
+    requestPlanApproval,
   } = options;
 
   const resolvedModel = model ?? getModel();
 
-  const effectiveMode = mode ?? rules.mode;
+  const getMode =
+    options.getMode ?? (() => mode ?? rules.mode);
+
+  const resolveTools = (): Tool[] => {
+    if (options.getTools) return options.getTools(getMode());
+    if (options.tools) return options.tools;
+    return getTools(getMode());
+  };
 
   const state: LoopState = {
     messages: [...options.messages],
@@ -145,7 +162,14 @@ export async function* query(
     usageAnchorIndex: options.usageAnchorIndex,
   };
 
-  const toolContext: ToolContext = { cwd };
+  const toolContext: ToolContext = {
+    cwd,
+    abortSignal,
+    sessionId,
+    setPermissionMode,
+    getPlanFilePath,
+    requestPlanApproval,
+  };
   let totalUsage = { inputTokens: 0, outputTokens: 0 };
 
   const finish = (reason: LoopTerminationReason): LoopResult => ({
@@ -156,12 +180,6 @@ export async function* query(
     lastCallUsage: state.lastCallUsage,
     usageAnchorIndex: state.usageAnchorIndex,
   });
-
-  const toolsApiParams = tools.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema,
-  }));
 
   while (state.turnCount < maxTurns) {
     if (abortSignal?.aborted === true) {
@@ -242,6 +260,13 @@ export async function* query(
     let outputLimit = getOutputTokenLimit("default");
     let retriedForTruncation = false;
 
+    const tools = resolveTools();
+    const toolsApiParams = tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+    }));
+
     try {
       while (true) {
         const stream = streamMessage(state.messages, {
@@ -320,7 +345,7 @@ export async function* query(
         toolCall.name,
         toolCall.input,
         rules,
-        effectiveMode,
+        getMode(),
         sessionRules
       );
 
@@ -363,6 +388,10 @@ export async function* query(
         toolContext
       );
       toolResults.push(result);
+
+      if (toolCall.name === "ExitPlanMode") {
+        setPermissionMode?.("default");
+      }
     }
 
     const toolResultMessage: UserMessage = {
