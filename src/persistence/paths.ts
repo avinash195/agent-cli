@@ -36,4 +36,8 @@ export function planFilePath(sessionId: string): string {
   return path.join(plansDir(), `${sessionId}.md`);
 }
 
+export function tasksDir(sessionId: string): string {
+  return path.join(AGENT_HOME, "tasks", sessionId);
+}
+
 export { AGENT_HOME };
