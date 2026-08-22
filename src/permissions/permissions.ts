@@ -359,7 +359,8 @@ export function evaluatePermission(
     toolName === "TaskCreate" ||
     toolName === "TaskUpdate" ||
     toolName === "TaskList" ||
-    toolName === "TaskGet"
+    toolName === "TaskGet" ||
+    toolName === "Skill"
   ) {
     return { decision: "allow", reason: "Session task state only" };
   }

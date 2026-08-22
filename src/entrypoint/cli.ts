@@ -33,7 +33,10 @@ if (args.includes('--help') || args.includes('-h')) {
 
 if (args.includes('--dump-system-prompt')) {
   const { renderSystemPrompt } = await import('../context/systemPrompt.js');
-  console.log(renderSystemPrompt({ cwd }));
+  const { loadAllSkills } = await import('../skills/loader.js');
+  console.log(
+    renderSystemPrompt({ cwd, skills: loadAllSkills(cwd) })
+  );
   process.exit(0);
 }
 
@@ -44,10 +47,16 @@ async function main() {
   const { App } = await import('../ui/App.js');
   const { McpManager } = await import('../mcp/manager.js');
   const { registerExternalTools } = await import('../tools/index.js');
+  const { loadAllSkills } = await import('../skills/loader.js');
+  const { createSkillTool } = await import('../skills/skillTool.js');
 
   const mcpManager = new McpManager();
   const mcpTools = await mcpManager.initialize();
-  registerExternalTools(mcpTools);
+  const skills = loadAllSkills(cwd);
+  registerExternalTools([
+    ...(skills.length > 0 ? [createSkillTool(skills)] : []),
+    ...mcpTools,
+  ]);
 
   const shutdown = async () => {
     await mcpManager.shutdown();

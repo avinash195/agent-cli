@@ -18,6 +18,7 @@ import {
   type AgentMode,
   type PermissionRules,
 } from "../permissions/permissions.js";
+import { isToolAllowedBySkill } from "../skills/enforcement.js";
 import { getTools } from "../tools/index.js";
 import type { Tool, ToolContext } from "../tools/Tool.js";
 import type {
@@ -118,6 +119,8 @@ export interface QueryOptions {
   getPlanFilePath?: () => string | null;
   requestPlanApproval?: ToolContext["requestPlanApproval"];
   planApprovalPrompt?: PlanApprovalPromptFn;
+  getSystemPrompt?: () => string;
+  onFileTouched?: (filePath: string) => void;
 }
 
 interface LoopState {
@@ -149,6 +152,9 @@ export async function* query(
     requestPlanApproval,
     planApprovalPrompt = defaultPlanApprovalPrompt,
   } = options;
+
+  const resolveSystemPrompt = (): string | undefined =>
+    options.getSystemPrompt?.() ?? systemPrompt;
 
   const resolvedModel = model ?? getModel();
 
@@ -291,7 +297,7 @@ export async function* query(
     try {
       while (true) {
         const stream = streamMessage(state.messages, {
-          systemPrompt,
+          systemPrompt: resolveSystemPrompt(),
           model: resolvedModel,
           cwd,
           tools: toolsApiParams,
@@ -362,6 +368,16 @@ export async function* query(
     for (const toolCall of toolUseBlocks) {
       if (toolCall.type !== "tool_use") continue;
 
+      if (!isToolAllowedBySkill(toolCall.name, toolCall.input)) {
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolCall.id,
+          content: `Permission denied: Tool "${toolCall.name}" is not allowed by the active skill`,
+          is_error: true,
+        });
+        continue;
+      }
+
       const decision = evaluatePermission(
         toolCall.name,
         toolCall.input,
@@ -409,6 +425,15 @@ export async function* query(
         toolContext
       );
       toolResults.push(result);
+
+      if (!result.is_error) {
+        const filePath =
+          (toolCall.input.file_path as string | undefined) ??
+          (toolCall.input.path as string | undefined);
+        if (filePath) {
+          options.onFileTouched?.(filePath);
+        }
+      }
     }
 
     const toolResultMessage: UserMessage = {

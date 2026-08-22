@@ -67,7 +67,10 @@ export function getTools(
         );
 
   if (mode === "plan") {
-    return builtins;
+    return [
+      ...builtins,
+      ...externalTools.filter((tool) => tool.name === "Skill"),
+    ];
   }
 
   return [...builtins, ...externalTools];

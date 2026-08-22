@@ -14,6 +14,13 @@ import {
 } from "../persistence/transcript.js";
 import type { TranscriptEntry } from "../persistence/types.js";
 import { renderSystemPrompt } from "../context/systemPrompt.js";
+import { loadAllSkills } from "../skills/loader.js";
+import {
+  clearActiveSkillRestriction,
+  setActiveSkillRestriction,
+} from "../skills/enforcement.js";
+import { expandSlashCommand } from "../skills/slashCommand.js";
+import type { SkillDefinition } from "../skills/types.js";
 import { query, type LoopEvent, type LoopResult } from "./agenticLoop.js";
 import { getTools, type TaskMode } from "../tools/index.js";
 import { getModel } from "../services/api/client.js";
@@ -87,6 +94,9 @@ export class QueryEngine {
   private taskMode: TaskMode = "todo";
   private planFilePath: string | null = null;
   private pendingApproval: PlanApprovalRequest | null = null;
+  private readonly skills: SkillDefinition[];
+  private readonly touchedPaths: string[] = [];
+  private readonly activatedSkills = new Set<string>();
 
   constructor(options: QueryEngineOptions = {}) {
     this.defaultModel = options.defaultModel ?? getModel();
@@ -103,6 +113,7 @@ export class QueryEngine {
     this.persistenceEnabled = options.persist ?? true;
     this.permissionMode = loadRules().mode;
     this.prePlanMode = this.permissionMode;
+    this.skills = loadAllSkills(this.cwd);
   }
 
   getPermissionMode(): AgentMode {
@@ -149,6 +160,16 @@ export class QueryEngine {
     this.abortController?.abort();
   }
 
+  private buildSystemPrompt(): string {
+    return renderSystemPrompt({
+      cwd: this.cwd,
+      ignoreMemory: this.ignoreMemory,
+      skills: this.skills,
+      touchedPaths: this.touchedPaths,
+      activatedSkills: this.activatedSkills,
+    });
+  }
+
   private estimateContextTokens(): number {
     return tokenCountWithEstimation(this.messages, {
       lastUsage: this.lastCallUsage,
@@ -157,13 +178,16 @@ export class QueryEngine {
   }
 
   async *submitMessage(input: string): AsyncGenerator<QueryEngineEvent> {
-    if (input.startsWith("/")) {
+    const skillExpansion = expandSlashCommand(input, this.skills);
+
+    if (input.startsWith("/") && !skillExpansion) {
       const result = await this.handleSlashCommand(input);
       yield result;
       return;
     }
 
-    const userMessage: Message = { role: "user", content: input };
+    clearActiveSkillRestriction();
+
     const model = this.getActiveModel();
 
     const preCount = this.estimateContextTokens();
@@ -177,21 +201,28 @@ export class QueryEngine {
       return;
     }
 
-    this.messages.push(userMessage);
-
-    await this.writeEntry({
-      type: "message",
-      timestamp: new Date().toISOString(),
-      role: "user",
-      message: userMessage,
-    });
+    if (skillExpansion) {
+      setActiveSkillRestriction(skillExpansion.skill.allowedTools);
+      this.messages.push(skillExpansion.visible);
+      this.messages.push(skillExpansion.hidden);
+      await this.writeEntry({
+        type: "message",
+        timestamp: new Date().toISOString(),
+        role: "user",
+        message: skillExpansion.visible,
+      });
+    } else {
+      const userMessage: Message = { role: "user", content: input };
+      this.messages.push(userMessage);
+      await this.writeEntry({
+        type: "message",
+        timestamp: new Date().toISOString(),
+        role: "user",
+        message: userMessage,
+      });
+    }
 
     this.abortController = new AbortController();
-
-    const systemPrompt = renderSystemPrompt({
-      cwd: this.cwd,
-      ignoreMemory: this.ignoreMemory,
-    });
 
     const tokenCount = this.estimateContextTokens();
     const budgetStatus = checkBudget(tokenCount, model);
@@ -255,7 +286,7 @@ export class QueryEngine {
       messages: this.messages,
       getTools: (mode) => getTools(mode, this.taskMode),
       getMode: () => this.permissionMode,
-      systemPrompt,
+      getSystemPrompt: () => this.buildSystemPrompt(),
       model,
       maxTurns: 50,
       abortSignal: this.abortController.signal,
@@ -278,6 +309,9 @@ export class QueryEngine {
       getPlanFilePath: () => this.planFilePath,
       requestPlanApproval: (options) => {
         this.pendingApproval = options;
+      },
+      onFileTouched: (filePath) => {
+        this.touchedPaths.push(filePath);
       },
     });
 
@@ -414,7 +448,17 @@ export class QueryEngine {
     let result: QueryEngineEvent;
 
     switch (command) {
-      case "/help":
+      case "/help": {
+        const skillLines =
+          this.skills.length === 0
+            ? []
+            : [
+                "",
+                "Skills:",
+                ...this.skills.map(
+                  (s) => `  /${s.name.padEnd(14)} ${s.description}`
+                ),
+              ];
         result = {
           type: "slash_command_result",
           output: [
@@ -427,9 +471,11 @@ export class QueryEngine {
             "  /history        List past sessions for this project",
             "  /memory on|off  Enable or disable memory injection",
             "  /tasks [todo|task|reset]  Checklist mode, task graph, or reset graph",
+            ...skillLines,
           ].join("\n"),
         };
         break;
+      }
 
       case "/memory":
         if (arg === "off") {
@@ -461,6 +507,9 @@ export class QueryEngine {
         this.usageAnchorIndex = undefined;
         this.circuitBreaker.consecutiveFailures = 0;
         todoStore.set(this.sessionId, []);
+        this.touchedPaths.length = 0;
+        this.activatedSkills.clear();
+        clearActiveSkillRestriction();
         await this.writeEntry({
           type: "system",
           timestamp: new Date().toISOString(),

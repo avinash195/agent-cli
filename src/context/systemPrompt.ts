@@ -5,11 +5,16 @@ import {
   loadMemoryIndex,
   renderMemorySection,
 } from "../memory/loader.js";
+import { renderSkillsForPrompt } from "../skills/systemPromptSection.js";
+import type { SkillDefinition } from "../skills/types.js";
 
 export interface SystemPromptOptions {
   cwd: string;
   model?: string;
   ignoreMemory?: boolean;
+  skills?: SkillDefinition[];
+  touchedPaths?: string[];
+  activatedSkills?: Set<string>;
 }
 
 const STATIC_PROMPT = `You are a coding agent. You help builders write, debug, and refactor code.
@@ -31,6 +36,7 @@ const STATIC_PROMPT = `You are a coding agent. You help builders write, debug, a
 - For multi-step work, call TodoWrite with the full checklist before acting, and update it as you go
 - If TaskCreate is available, use the persistent task graph (with dependencies) instead of TodoWrite
 - Tools prefixed with mcp_ come from external MCP servers. Use them when they match the user's request.
+- Call Skill with a skill name when a listed workflow matches the task. Follow the returned instructions.
 
 ## Memory
 
@@ -50,7 +56,13 @@ Memory types:
 - reference: External system entry points`;
 
 export function buildSystemPrompt(options: SystemPromptOptions): string[] {
-  const { cwd, ignoreMemory = false } = options;
+  const {
+    cwd,
+    ignoreMemory = false,
+    skills = [],
+    touchedPaths = [],
+    activatedSkills = new Set<string>(),
+  } = options;
 
   const sections: string[] = [];
 
@@ -73,6 +85,17 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
     const memoryIndex = loadMemoryIndex(cwd);
     if (memoryIndex) {
       sections.push(renderMemorySection(memoryIndex, getMemoryDir(cwd)));
+    }
+  }
+
+  if (skills.length > 0) {
+    const skillSection = renderSkillsForPrompt(
+      skills,
+      touchedPaths,
+      activatedSkills
+    );
+    if (skillSection) {
+      sections.push(skillSection);
     }
   }
 

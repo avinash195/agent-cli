@@ -15,6 +15,7 @@ import {
   type ApprovalDecision,
   type PlanApprovalOptions,
 } from './planApproval.js';
+import { isSkillBodyMessage } from '../skills/slashCommand.js';
 import type { Message } from '../types/message.js';
 import { todoStore } from '../tasks/todoStore.js';
 import type { TodoItem } from '../tasks/todoTypes.js';
@@ -50,6 +51,7 @@ function messagesToDisplay(messages: Message[]): DisplayMessage[] {
     if (msg.role === 'user') {
       if (typeof msg.content === 'string') {
         if (isPlanModeAttachment(msg.content)) continue;
+        if (isSkillBodyMessage(msg.content)) continue;
         result.push({ role: 'user', content: msg.content });
       }
     } else {
@@ -293,7 +295,23 @@ export function App({
   }
 
   async function handleSubmit(text: string) {
-    if (!text.startsWith('/')) {
+    const slashName = text.startsWith('/')
+      ? text.slice(1).split(/\s+/)[0]
+      : '';
+    const builtinSlash = new Set([
+      'help',
+      'clear',
+      'cost',
+      'compact',
+      'model',
+      'history',
+      'memory',
+      'tasks',
+    ]);
+    const hideFromTranscript =
+      text.startsWith('/') && builtinSlash.has(slashName);
+
+    if (!hideFromTranscript) {
       setDisplayMessages((prev) => [
         ...prev,
         { role: 'user', content: text },
