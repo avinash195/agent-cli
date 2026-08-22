@@ -38,9 +38,15 @@ const allTools: Tool[] = [
   ...taskGraphTools,
 ];
 
+let externalTools: Tool[] = [];
+
 function withTrackingTools(tools: Tool[], taskMode: TaskMode): Tool[] {
   const tracking = taskMode === "task" ? taskGraphTools : [todoWriteTool];
   return [...tools, ...tracking].filter((tool) => tool.isEnabled());
+}
+
+export function registerExternalTools(tools: Tool[]): void {
+  externalTools = tools.filter((tool) => tool.isEnabled());
 }
 
 export function getTools(
@@ -49,17 +55,22 @@ export function getTools(
 ): Tool[] {
   const base = [fileReadTool, grepTool, globTool, bashTool];
 
+  const builtins =
+    mode === "plan"
+      ? withTrackingTools(
+          [...base, writeTool, editTool, exitPlanModeTool],
+          taskMode
+        )
+      : withTrackingTools(
+          [...base, writeTool, editTool, memoryWriteTool, enterPlanModeTool],
+          taskMode
+        );
+
   if (mode === "plan") {
-    return withTrackingTools(
-      [...base, writeTool, editTool, exitPlanModeTool],
-      taskMode
-    );
+    return builtins;
   }
 
-  return withTrackingTools(
-    [...base, writeTool, editTool, memoryWriteTool, enterPlanModeTool],
-    taskMode
-  );
+  return [...builtins, ...externalTools];
 }
 
 export function getAllTools(): Tool[] {
@@ -67,7 +78,7 @@ export function getAllTools(): Tool[] {
 }
 
 export function findToolByName(name: string): Tool | undefined {
-  return allTools.find((tool) => tool.name === name);
+  return [...allTools, ...externalTools].find((tool) => tool.name === name);
 }
 
 export function getToolsApiParams(): Array<{

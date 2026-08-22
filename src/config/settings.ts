@@ -17,6 +17,7 @@ interface SettingsFile {
   mode?: AgentMode;
   allow?: string[];
   deny?: string[];
+  mcpServers?: Record<string, unknown>;
 }
 
 function loadJSON(path: string): SettingsFile | null {

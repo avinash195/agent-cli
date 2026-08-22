@@ -30,6 +30,7 @@ const STATIC_PROMPT = `You are a coding agent. You help builders write, debug, a
 - For multi-file or architectural work, call EnterPlanMode before editing
 - For multi-step work, call TodoWrite with the full checklist before acting, and update it as you go
 - If TaskCreate is available, use the persistent task graph (with dependencies) instead of TodoWrite
+- Tools prefixed with mcp_ come from external MCP servers. Use them when they match the user's request.
 
 ## Memory
 

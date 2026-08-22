@@ -134,7 +134,7 @@ export function globMatch(value: string, pattern: string): boolean {
 export function parseRuleString(
   rule: string
 ): { tool: string; pattern: string } | null {
-  const match = rule.match(/^(\w+)\((.+)\)$/);
+  const match = rule.match(/^([\w*]+)\((.+)\)$/);
   if (!match) return null;
   return { tool: match[1], pattern: match[2] };
 }
@@ -157,7 +157,9 @@ export function matchesToolRule(
 ): boolean {
   const parsed = parseRuleString(rule);
   if (!parsed) return false;
-  if (parsed.tool.toLowerCase() !== toolName.toLowerCase()) return false;
+  if (!globMatch(toolName, parsed.tool) && parsed.tool.toLowerCase() !== toolName.toLowerCase()) {
+    return false;
+  }
 
   if (toolName === "bash") {
     const command = normalizeBashSegment(toolInput.command as string);

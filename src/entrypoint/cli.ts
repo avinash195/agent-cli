@@ -42,6 +42,23 @@ async function main() {
   const { createElement } = await import('react');
   const { getModel } = await import('../services/api/client.js');
   const { App } = await import('../ui/App.js');
+  const { McpManager } = await import('../mcp/manager.js');
+  const { registerExternalTools } = await import('../tools/index.js');
+
+  const mcpManager = new McpManager();
+  const mcpTools = await mcpManager.initialize();
+  registerExternalTools(mcpTools);
+
+  const shutdown = async () => {
+    await mcpManager.shutdown();
+  };
+
+  process.once('SIGINT', () => {
+    void shutdown().finally(() => process.exit(0));
+  });
+  process.once('SIGTERM', () => {
+    void shutdown().finally(() => process.exit(0));
+  });
 
   let initialMessages: import('../types/message.js').Message[] = [];
   let initialUsage = { inputTokens: 0, outputTokens: 0 };
@@ -94,6 +111,7 @@ async function main() {
   );
 
   await instance.waitUntilExit();
+  await mcpManager.shutdown();
 }
 
 main().catch((err) => {
