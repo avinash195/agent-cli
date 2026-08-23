@@ -1,6 +1,12 @@
 import { microCompact, type CompactionResult } from "../compression/index.js";
 import { loadRules } from "../config/settings.js";
 import { executeSingleTool } from "./executeTool.js";
+import {
+  executeHooks,
+  loadHooks,
+  type HookEventResult,
+  type HooksConfig,
+} from "../hooks/index.js";
 import { streamMessage } from "../services/api/streaming.js";
 import { tokenCountWithEstimation } from "../compression/tokens.js";
 import {
@@ -25,6 +31,7 @@ import type {
   AssistantMessage,
   Message,
   ToolResultBlock,
+  ToolUseBlock,
   UserMessage,
 } from "../types/message.js";
 import {
@@ -85,7 +92,8 @@ export type LoopEvent =
     }
   | { type: "stream_reset" }
   | { type: "turn_complete"; turnCount: number; reason: string }
-  | { type: "error"; error: Error };
+  | { type: "error"; error: Error }
+  | { type: "hook_warning"; event: string; message: string };
 
 export interface LoopResult {
   messages: Message[];
@@ -121,6 +129,7 @@ export interface QueryOptions {
   planApprovalPrompt?: PlanApprovalPromptFn;
   getSystemPrompt?: () => string;
   onFileTouched?: (filePath: string) => void;
+  hooksConfig?: HooksConfig;
 }
 
 interface LoopState {
@@ -151,6 +160,7 @@ export async function* query(
     getPlanFilePath,
     requestPlanApproval,
     planApprovalPrompt = defaultPlanApprovalPrompt,
+    hooksConfig = loadHooks(),
   } = options;
 
   const resolveSystemPrompt = (): string | undefined =>
@@ -190,6 +200,7 @@ export async function* query(
   };
   let totalUsage = { inputTokens: 0, outputTokens: 0 };
   let planTurnCount = 0;
+  let stopHookFired = false;
 
   const finish = (reason: LoopTerminationReason): LoopResult => ({
     messages: state.messages,
@@ -351,6 +362,32 @@ export async function* query(
     yield { type: "assistant_message", message: assistantMessage };
 
     if (stopReason !== "tool_use") {
+      if (!stopHookFired) {
+        const stopResult = await executeHooks(
+          hooksConfig,
+          "Stop",
+          { event: "Stop" },
+          cwd
+        );
+        yield* yieldHookWarnings("Stop", stopResult);
+
+        if (stopResult.injections.length > 0) {
+          stopHookFired = true;
+          yield {
+            type: "hook_warning",
+            event: "Stop",
+            message: "Hook requested the agent continue.",
+          };
+          const injectionMessage: UserMessage = {
+            role: "user",
+            content: stopResult.injections.join("\n\n"),
+          };
+          state.messages.push(injectionMessage);
+          yield { type: "tool_result_message", message: injectionMessage };
+          continue;
+        }
+      }
+
       yield {
         type: "turn_complete",
         turnCount: state.turnCount,
@@ -419,14 +456,17 @@ export async function* query(
         }
       }
 
-      const result = await executeSingleTool(
+      const executed = await executeToolWithHooks(
         toolCall,
         tools,
-        toolContext
+        toolContext,
+        hooksConfig
       );
-      toolResults.push(result);
+      yield* yieldHookWarnings("PreToolUse", executed.pre);
+      yield* yieldHookWarnings("PostToolUse", executed.post);
+      toolResults.push(executed.result);
 
-      if (!result.is_error) {
+      if (!executed.result.is_error) {
         const filePath =
           (toolCall.input.file_path as string | undefined) ??
           (toolCall.input.path as string | undefined);
@@ -451,6 +491,7 @@ export async function* query(
         if (result) {
           const wasDenied =
             result.content.startsWith("Permission denied:") ||
+            result.content.startsWith("Blocked by hook:") ||
             result.content === "User denied this operation.";
 
           if (wasDenied) {
@@ -527,4 +568,85 @@ export async function* query(
   }
 
   return finish("max_turns");
+}
+
+function* yieldHookWarnings(
+  event: string,
+  result: HookEventResult
+): Generator<LoopEvent> {
+  for (const message of result.warnings) {
+    yield { type: "hook_warning", event, message };
+  }
+}
+
+async function executeToolWithHooks(
+  toolCall: ToolUseBlock,
+  tools: Tool[],
+  context: ToolContext,
+  hooksConfig: HooksConfig
+): Promise<{
+  result: ToolResultBlock;
+  pre: HookEventResult;
+  post: HookEventResult;
+}> {
+  const empty: HookEventResult = {
+    blocked: false,
+    reason: "",
+    injections: [],
+    warnings: [],
+  };
+
+  const pre = await executeHooks(
+    hooksConfig,
+    "PreToolUse",
+    {
+      event: "PreToolUse",
+      toolName: toolCall.name,
+      toolInput: toolCall.input,
+    },
+    context.cwd
+  );
+
+  if (pre.blocked) {
+    return {
+      result: {
+        type: "tool_result",
+        tool_use_id: toolCall.id,
+        content: `Blocked by hook: ${pre.reason}`,
+        is_error: true,
+      },
+      pre,
+      post: empty,
+    };
+  }
+
+  const result = await executeSingleTool(toolCall, tools, context);
+
+  const post = await executeHooks(
+    hooksConfig,
+    "PostToolUse",
+    {
+      event: "PostToolUse",
+      toolName: toolCall.name,
+      toolInput: toolCall.input,
+      toolResult: result.content,
+    },
+    context.cwd
+  );
+
+  let content = result.content;
+  if (post.injections.length > 0) {
+    content += "\n\n" + post.injections.join("\n");
+  }
+
+  return {
+    result: {
+      type: "tool_result",
+      tool_use_id: toolCall.id,
+      content,
+      is_error: result.is_error,
+    },
+    pre,
+    post,
+  };
 }

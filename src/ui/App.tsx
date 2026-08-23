@@ -16,6 +16,7 @@ import {
   type PlanApprovalOptions,
 } from './planApproval.js';
 import { isSkillBodyMessage } from '../skills/slashCommand.js';
+import { isHookContextMessage } from '../hooks/index.js';
 import type { Message } from '../types/message.js';
 import { todoStore } from '../tasks/todoStore.js';
 import type { TodoItem } from '../tasks/todoTypes.js';
@@ -52,6 +53,7 @@ function messagesToDisplay(messages: Message[]): DisplayMessage[] {
       if (typeof msg.content === 'string') {
         if (isPlanModeAttachment(msg.content)) continue;
         if (isSkillBodyMessage(msg.content)) continue;
+        if (isHookContextMessage(msg.content)) continue;
         result.push({ role: 'user', content: msg.content });
       }
     } else {
@@ -282,6 +284,17 @@ export function App({
         if (event.level === 'blocking') {
           setErrorText(event.message);
         }
+        break;
+
+      case 'hook_warning':
+        setDisplayMessages((prev) => [
+          ...prev,
+          {
+            role: 'system',
+            tone: 'warning',
+            content: `[hook:${event.event}] ${event.message}`,
+          },
+        ]);
         break;
 
       case 'stream_reset':

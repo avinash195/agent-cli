@@ -29,6 +29,11 @@ import {
   type AgentMode,
 } from "../permissions/permissions.js";
 import { loadRules } from "../config/settings.js";
+import {
+  executeHooks,
+  loadHooks,
+  wrapHookContext,
+} from "../hooks/index.js";
 import { planFilePath } from "../persistence/paths.js";
 import { resetTaskGraph } from "../tasks/taskGraph.js";
 import { todoStore } from "../tasks/todoStore.js";
@@ -97,6 +102,7 @@ export class QueryEngine {
   private readonly skills: SkillDefinition[];
   private readonly touchedPaths: string[] = [];
   private readonly activatedSkills = new Set<string>();
+  private sessionStartFired = false;
 
   constructor(options: QueryEngineOptions = {}) {
     this.defaultModel = options.defaultModel ?? getModel();
@@ -188,6 +194,20 @@ export class QueryEngine {
 
     clearActiveSkillRestriction();
 
+    const hooksConfig = loadHooks();
+
+    if (!this.sessionStartFired) {
+      this.sessionStartFired = true;
+      const sessionStart = await executeHooks(
+        hooksConfig,
+        "SessionStart",
+        { event: "SessionStart" },
+        this.cwd
+      );
+      yield* this.applyHookInjections(sessionStart.injections);
+      yield* this.yieldHookWarnings("SessionStart", sessionStart.warnings);
+    }
+
     const model = this.getActiveModel();
 
     const preCount = this.estimateContextTokens();
@@ -221,6 +241,15 @@ export class QueryEngine {
         message: userMessage,
       });
     }
+
+    const promptSubmit = await executeHooks(
+      hooksConfig,
+      "UserPromptSubmit",
+      { event: "UserPromptSubmit", userPrompt: input },
+      this.cwd
+    );
+    yield* this.applyHookInjections(promptSubmit.injections);
+    yield* this.yieldHookWarnings("UserPromptSubmit", promptSubmit.warnings);
 
     this.abortController = new AbortController();
 
@@ -313,6 +342,7 @@ export class QueryEngine {
       onFileTouched: (filePath) => {
         this.touchedPaths.push(filePath);
       },
+      hooksConfig,
     });
 
     let result = await loop.next();
@@ -368,6 +398,14 @@ export class QueryEngine {
           timestamp: new Date().toISOString(),
           level: "info",
           event: "aborted",
+        });
+      } else if (event.type === "hook_warning") {
+        await this.writeEntry({
+          type: "system",
+          timestamp: new Date().toISOString(),
+          level: "info",
+          event: "hook_warning",
+          detail: `${event.event}: ${event.message}`,
         });
       }
 
@@ -432,6 +470,41 @@ export class QueryEngine {
     }
 
     this.abortController = null;
+  }
+
+  private async *yieldHookWarnings(
+    event: string,
+    warnings: string[]
+  ): AsyncGenerator<QueryEngineEvent> {
+    for (const message of warnings) {
+      await this.writeEntry({
+        type: "system",
+        timestamp: new Date().toISOString(),
+        level: "info",
+        event: "hook_warning",
+        detail: `${event}: ${message}`,
+      });
+      yield { type: "hook_warning", event, message };
+    }
+  }
+
+  private async *applyHookInjections(
+    injections: string[]
+  ): AsyncGenerator<QueryEngineEvent> {
+    if (injections.length === 0) return;
+
+    const text = injections.join("\n\n");
+    const userMessage: UserMessage = {
+      role: "user",
+      content: wrapHookContext(text),
+    };
+    this.messages.push(userMessage);
+    await this.writeEntry({
+      type: "message",
+      timestamp: new Date().toISOString(),
+      role: "user",
+      message: userMessage,
+    });
   }
 
   private async writeEntry(entry: TranscriptEntry): Promise<void> {
