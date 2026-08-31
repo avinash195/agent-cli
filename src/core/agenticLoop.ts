@@ -99,7 +99,7 @@ export interface LoopResult {
   messages: Message[];
   terminationReason: LoopTerminationReason;
   turnCount: number;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number };
   lastCallUsage?: { inputTokens: number };
   usageAnchorIndex?: number;
 }
@@ -198,7 +198,7 @@ export async function* query(
       requestPlanApproval?.(approval);
     },
   };
-  let totalUsage = { inputTokens: 0, outputTokens: 0 };
+  let totalUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
   let planTurnCount = 0;
   let stopHookFired = false;
 
@@ -339,6 +339,7 @@ export async function* query(
         stopReason = streamResult.value.stopReason;
         totalUsage.inputTokens += streamResult.value.usage.inputTokens;
         totalUsage.outputTokens += streamResult.value.usage.outputTokens;
+        totalUsage.cacheReadTokens += streamResult.value.usage.cacheReadTokens;
         state.lastCallUsage = {
           inputTokens: streamResult.value.usage.inputTokens,
         };

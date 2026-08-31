@@ -25,6 +25,26 @@ export interface StreamMessageOptions {
   }>;
 }
 
+function applyApiUsage(
+  usage: StreamResult["usage"],
+  api: {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  }
+): void {
+  if (api.input_tokens != null) {
+    const cacheRead = api.cache_read_input_tokens ?? 0;
+    const cacheCreate = api.cache_creation_input_tokens ?? 0;
+    usage.inputTokens = api.input_tokens + cacheCreate + cacheRead;
+    usage.cacheReadTokens = cacheRead;
+  }
+  if (api.output_tokens != null) {
+    usage.outputTokens = api.output_tokens;
+  }
+}
+
 export async function* streamMessage(
   messages: Message[],
   options: StreamMessageOptions = {}
@@ -39,7 +59,15 @@ export async function* streamMessage(
   const requestParams: Parameters<typeof client.messages.stream>[0] = {
     model: model ?? getModel(),
     max_tokens: maxTokens ?? getOutputTokenLimit("default"),
-    system: resolvedSystemPrompt,
+    system: resolvedSystemPrompt
+      ? [
+          {
+            type: "text" as const,
+            text: resolvedSystemPrompt,
+            cache_control: { type: "ephemeral" as const },
+          },
+        ]
+      : undefined,
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content,
@@ -47,8 +75,11 @@ export async function* streamMessage(
   };
 
   if (tools && tools.length > 0) {
-    // SDK InputSchema is stricter than our Tool.inputSchema type
-    requestParams.tools = tools as never;
+    requestParams.tools = tools.map((tool, index) =>
+      index === tools.length - 1
+        ? { ...tool, cache_control: { type: "ephemeral" as const } }
+        : tool
+    ) as never;
   }
 
   const stream = client.messages.stream(requestParams, { signal });
@@ -60,9 +91,10 @@ export async function* streamMessage(
   let currentToolName = "";
   let currentToolInput = "";
 
-  let usage = {
+  const usage: StreamResult["usage"] = {
     inputTokens: 0,
     outputTokens: 0,
+    cacheReadTokens: 0,
   };
 
   let stopReason = "end_turn";
@@ -142,14 +174,14 @@ export async function* streamMessage(
           stopReason = event.delta.stop_reason;
         }
         if (event.usage) {
-          usage.outputTokens = event.usage.output_tokens;
+          applyApiUsage(usage, event.usage);
         }
         break;
       }
 
       case "message_start": {
         if (event.message?.usage) {
-          usage.inputTokens = event.message.usage.input_tokens;
+          applyApiUsage(usage, event.message.usage);
         }
         break;
       }

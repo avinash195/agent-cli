@@ -7,7 +7,7 @@ import type { Message } from "../types/message.js";
 export interface RestoredSession {
   sessionId: string;
   messages: Message[];
-  usage: { inputTokens: number; outputTokens: number };
+  usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number };
 }
 
 async function readLatest(cwd: string): Promise<string | null> {
@@ -43,7 +43,7 @@ export async function restoreSession(
   }
 
   const messages: Message[] = [];
-  let usage = { inputTokens: 0, outputTokens: 0 };
+  let usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
 
   for (let i = 0; i < lines.length; i++) {
     const entry: TranscriptEntry = JSON.parse(lines[i]);
@@ -53,7 +53,12 @@ export async function restoreSession(
     }
 
     if (entry.type === "usage") {
-      usage = (entry as UsageEntry).cumulative;
+      const cumulative = (entry as UsageEntry).cumulative;
+      usage = {
+        inputTokens: cumulative.inputTokens,
+        outputTokens: cumulative.outputTokens,
+        cacheReadTokens: cumulative.cacheReadTokens ?? 0,
+      };
     }
   }
 

@@ -27,8 +27,12 @@ export interface ToolEventEntry {
 export interface UsageEntry {
   type: "usage";
   timestamp: string;
-  turn: { inputTokens: number; outputTokens: number };
-  cumulative: { inputTokens: number; outputTokens: number };
+  turn: { inputTokens: number; outputTokens: number; cacheReadTokens?: number };
+  cumulative: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+  };
 }
 
 export interface SystemEntry {

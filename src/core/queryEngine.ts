@@ -60,6 +60,25 @@ import {
 interface Usage {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+}
+
+function formatUsage(usage: Usage): string {
+  const fresh = Math.max(0, usage.inputTokens - usage.cacheReadTokens);
+  const cachePct =
+    usage.inputTokens > 0
+      ? ((usage.cacheReadTokens / usage.inputTokens) * 100).toFixed(1)
+      : "0.0";
+  const freshPct =
+    usage.inputTokens > 0
+      ? ((fresh / usage.inputTokens) * 100).toFixed(1)
+      : "0.0";
+  return [
+    `Prompt tokens: ${usage.inputTokens.toLocaleString()}`,
+    `Prompt tokens served from cache: ${usage.cacheReadTokens.toLocaleString()} (${cachePct}%)`,
+    `Prompt tokens computed fresh: ${fresh.toLocaleString()} (${freshPct}%)`,
+    `Output tokens generated: ${usage.outputTokens.toLocaleString()}`,
+  ].join("\n");
 }
 
 export type QueryEngineEvent =
@@ -114,6 +133,7 @@ export class QueryEngine {
     this.totalUsage = options.initialUsage ?? {
       inputTokens: 0,
       outputTokens: 0,
+      cacheReadTokens: 0,
     };
     this.sessionId = options.sessionId ?? crypto.randomUUID();
     this.persistenceEnabled = options.persist ?? true;
@@ -419,6 +439,7 @@ export class QueryEngine {
     this.usageAnchorIndex = loopResult.usageAnchorIndex;
     this.totalUsage.inputTokens += loopResult.usage.inputTokens;
     this.totalUsage.outputTokens += loopResult.usage.outputTokens;
+    this.totalUsage.cacheReadTokens += loopResult.usage.cacheReadTokens;
 
     await this.writeEntry({
       type: "usage",
@@ -575,7 +596,11 @@ export class QueryEngine {
 
       case "/clear":
         this.messages = [];
-        this.totalUsage = { inputTokens: 0, outputTokens: 0 };
+        this.totalUsage = {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+        };
         this.lastCallUsage = undefined;
         this.usageAnchorIndex = undefined;
         this.circuitBreaker.consecutiveFailures = 0;
@@ -595,11 +620,7 @@ export class QueryEngine {
       case "/cost":
         result = {
           type: "slash_command_result",
-          output: [
-            `Input tokens:  ${this.totalUsage.inputTokens.toLocaleString()}`,
-            `Output tokens: ${this.totalUsage.outputTokens.toLocaleString()}`,
-            `Total tokens:  ${(this.totalUsage.inputTokens + this.totalUsage.outputTokens).toLocaleString()}`,
-          ].join("\n"),
+          output: formatUsage(this.totalUsage),
         };
         break;
 

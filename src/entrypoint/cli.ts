@@ -70,7 +70,7 @@ async function main() {
   });
 
   let initialMessages: import('../types/message.js').Message[] = [];
-  let initialUsage = { inputTokens: 0, outputTokens: 0 };
+  let initialUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
   let sessionId: string = crypto.randomUUID();
 
   const resumeIndex = args.indexOf('--resume');

@@ -69,7 +69,11 @@ function messagesToDisplay(messages: Message[]): DisplayMessage[] {
 
 export interface AppProps {
   initialMessages?: Message[];
-  initialUsage?: { inputTokens: number; outputTokens: number };
+  initialUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+  };
   sessionId?: string;
 }
 
@@ -88,11 +92,13 @@ export function App({
   const [streamingText, setStreamingText] = useState('');
   const [toolCalls, setToolCalls] = useState<ToolCallInfo[]>([]);
   const [lastUsage, setLastUsage] = useState<{
-    in: number;
-    out: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
   } | null>(
-    initialUsage
-      ? { in: initialUsage.inputTokens, out: initialUsage.outputTokens }
+    initialUsage &&
+      initialUsage.inputTokens + initialUsage.outputTokens > 0
+      ? initialUsage
       : null
   );
   const [activeModel, setActiveModel] = useState(getModel());
@@ -341,8 +347,7 @@ export function App({
         handleEvent(event);
       }
 
-      const usage = engine.getUsage();
-      setLastUsage({ in: usage.inputTokens, out: usage.outputTokens });
+      setLastUsage(engine.getUsage());
       setActiveModel(engine.getActiveModel());
     } catch (err: unknown) {
       const msg =
@@ -576,11 +581,23 @@ export function App({
       )}
 
       {lastUsage && (
-        <Box>
-          <Text dimColor>
-            tokens: {lastUsage.in.toLocaleString()} in /{' '}
-            {lastUsage.out.toLocaleString()} out
-          </Text>
+        <Box flexDirection="column" borderStyle="single" paddingX={1} marginY={1}>
+          <UsageRow
+            label="Prompt tokens"
+            value={lastUsage.inputTokens.toLocaleString()}
+          />
+          <UsageRow
+            label="Prompt tokens served from cache"
+            value={`${lastUsage.cacheReadTokens.toLocaleString()} (${usagePct(lastUsage.cacheReadTokens, lastUsage.inputTokens)})`}
+          />
+          <UsageRow
+            label="Prompt tokens computed fresh"
+            value={`${Math.max(0, lastUsage.inputTokens - lastUsage.cacheReadTokens).toLocaleString()} (${usagePct(Math.max(0, lastUsage.inputTokens - lastUsage.cacheReadTokens), lastUsage.inputTokens)})`}
+          />
+          <UsageRow
+            label="Output tokens generated"
+            value={lastUsage.outputTokens.toLocaleString()}
+          />
         </Box>
       )}
 
@@ -593,6 +610,22 @@ export function App({
           <Text color="gray">█</Text>
         </Box>
       )}
+    </Box>
+  );
+}
+
+function usagePct(part: number, total: number): string {
+  if (total <= 0) return '0.0%';
+  return `${((part / total) * 100).toFixed(1)}%`;
+}
+
+function UsageRow({ label, value }: { label: string; value: string }) {
+  return (
+    <Box>
+      <Box width={36}>
+        <Text dimColor>{label}</Text>
+      </Box>
+      <Text>{value}</Text>
     </Box>
   );
 }

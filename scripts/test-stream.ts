@@ -32,7 +32,7 @@ async function main() {
 
   const streamResult = result.value;
   console.log(
-    `\nTokens: ${streamResult.usage.inputTokens} in / ${streamResult.usage.outputTokens} out`
+    `\nTokens: ${streamResult.usage.inputTokens} in / ${streamResult.usage.outputTokens} out / ${streamResult.usage.cacheReadTokens} cached`
   );
   console.log(`Stop reason: ${streamResult.stopReason}`);
 }

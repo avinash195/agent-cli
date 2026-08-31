@@ -71,6 +71,10 @@ export type StreamEvent =
 
 export interface StreamResult {
   assistantMessage: AssistantMessage;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+  };
   stopReason: string;
 }
