@@ -10,11 +10,14 @@ import type {
 
 import { getOutputTokenLimit } from "../../tokens/outputLimits.js";
 import { getClient, getModel } from "./client.js";
-import { renderSystemPrompt } from "../../context/systemPrompt.js";
+import {
+  buildSystemPromptBlocks,
+  type SystemPromptBlock,
+} from "../../context/systemPrompt.js";
 
 export interface StreamMessageOptions {
   signal?: AbortSignal;
-  systemPrompt?: string;
+  systemPrompt?: SystemPromptBlock[];
   model?: string;
   cwd?: string;
   maxTokens?: number;
@@ -54,20 +57,18 @@ export async function* streamMessage(
 
   const resolvedSystemPrompt =
     systemPrompt ??
-    renderSystemPrompt({ cwd: cwd ?? process.cwd() });
+    buildSystemPromptBlocks({ cwd: cwd ?? process.cwd() });
 
   const requestParams: Parameters<typeof client.messages.stream>[0] = {
     model: model ?? getModel(),
     max_tokens: maxTokens ?? getOutputTokenLimit("default"),
-    system: resolvedSystemPrompt
-      ? [
-          {
-            type: "text" as const,
-            text: resolvedSystemPrompt,
-            cache_control: { type: "ephemeral" as const },
-          },
-        ]
-      : undefined,
+    system: resolvedSystemPrompt.map((block) => ({
+      type: "text" as const,
+      text: block.text,
+      ...(block.cache
+        ? { cache_control: { type: "ephemeral" as const } }
+        : {}),
+    })),
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content,

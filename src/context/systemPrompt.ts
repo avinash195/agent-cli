@@ -17,6 +17,11 @@ export interface SystemPromptOptions {
   activatedSkills?: Set<string>;
 }
 
+export interface SystemPromptBlock {
+  text: string;
+  cache: boolean;
+}
+
 const STATIC_PROMPT = `You are a coding agent. You help builders write, debug, and refactor code.
 
 ## Behavior Rules
@@ -55,7 +60,9 @@ Memory types:
 - project: Facts not derivable from code
 - reference: External system entry points`;
 
-export function buildSystemPrompt(options: SystemPromptOptions): string[] {
+export function buildSystemPromptBlocks(
+  options: SystemPromptOptions
+): SystemPromptBlock[] {
   const {
     cwd,
     ignoreMemory = false,
@@ -64,29 +71,41 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
     activatedSkills = new Set<string>(),
   } = options;
 
-  const sections: string[] = [];
+  const blocks: SystemPromptBlock[] = [
+    {
+      text: [
+        "<SYSTEM_STATIC_CONTEXT>",
+        STATIC_PROMPT,
+        "</SYSTEM_STATIC_CONTEXT>",
+      ].join("\n\n"),
+      cache: true,
+    },
+  ];
 
-  sections.push(`<SYSTEM_STATIC_CONTEXT>`);
-  sections.push(STATIC_PROMPT);
-  sections.push(`</SYSTEM_STATIC_CONTEXT>`);
-
-  sections.push(`<SYSTEM_DYNAMIC_CONTEXT>`);
-
-  const env = gatherEnvironment(cwd);
-  sections.push(renderEnvironment(env));
-
-  const agentMd = loadAgentMemory(cwd);
-  const agentText = renderAgentMemory(agentMd);
-  if (agentText) {
-    sections.push(agentText);
-  }
+  const projectSections: string[] = [];
+  const agentText = renderAgentMemory(loadAgentMemory(cwd));
+  if (agentText) projectSections.push(agentText);
 
   if (!ignoreMemory) {
     const memoryIndex = loadMemoryIndex(cwd);
     if (memoryIndex) {
-      sections.push(renderMemorySection(memoryIndex, getMemoryDir(cwd)));
+      projectSections.push(renderMemorySection(memoryIndex, getMemoryDir(cwd)));
     }
   }
+
+  if (projectSections.length > 0) {
+    blocks.push({
+      text: [
+        "<SYSTEM_PROJECT_CONTEXT>",
+        ...projectSections,
+        "</SYSTEM_PROJECT_CONTEXT>",
+      ].join("\n\n"),
+      cache: true,
+    });
+  }
+
+  const dynamicSections = ["<SYSTEM_DYNAMIC_CONTEXT>"];
+  dynamicSections.push(renderEnvironment(gatherEnvironment(cwd)));
 
   if (skills.length > 0) {
     const skillSection = renderSkillsForPrompt(
@@ -94,16 +113,17 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
       touchedPaths,
       activatedSkills
     );
-    if (skillSection) {
-      sections.push(skillSection);
-    }
+    if (skillSection) dynamicSections.push(skillSection);
   }
 
-  sections.push(`</SYSTEM_DYNAMIC_CONTEXT>`);
+  dynamicSections.push("</SYSTEM_DYNAMIC_CONTEXT>");
+  blocks.push({ text: dynamicSections.join("\n\n"), cache: false });
 
-  return sections;
+  return blocks;
 }
 
 export function renderSystemPrompt(options: SystemPromptOptions): string {
-  return buildSystemPrompt(options).join("\n\n");
+  return buildSystemPromptBlocks(options)
+    .map((block) => block.text)
+    .join("\n\n");
 }

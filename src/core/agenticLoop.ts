@@ -1,5 +1,6 @@
 import { microCompact, type CompactionResult } from "../compression/index.js";
 import { loadRules } from "../config/settings.js";
+import { buildSystemPromptBlocks } from "../context/systemPrompt.js";
 import { executeSingleTool } from "./executeTool.js";
 import {
   executeHooks,
@@ -34,6 +35,7 @@ import type {
   ToolUseBlock,
   UserMessage,
 } from "../types/message.js";
+import type { SystemPromptBlock } from "../context/systemPrompt.js";
 import {
   createTerminalPermissionPrompt,
   inferPattern,
@@ -109,7 +111,7 @@ export interface QueryOptions {
   tools?: Tool[];
   getTools?: (mode: AgentMode) => Tool[];
   getMode?: () => AgentMode;
-  systemPrompt?: string;
+  systemPrompt?: SystemPromptBlock[];
   model?: string;
   maxTurns?: number;
   abortSignal?: AbortSignal;
@@ -127,7 +129,7 @@ export interface QueryOptions {
   getPlanFilePath?: () => string | null;
   requestPlanApproval?: ToolContext["requestPlanApproval"];
   planApprovalPrompt?: PlanApprovalPromptFn;
-  getSystemPrompt?: () => string;
+  getSystemPrompt?: () => SystemPromptBlock[];
   onFileTouched?: (filePath: string) => void;
   hooksConfig?: HooksConfig;
 }
@@ -163,8 +165,10 @@ export async function* query(
     hooksConfig = loadHooks(),
   } = options;
 
-  const resolveSystemPrompt = (): string | undefined =>
-    options.getSystemPrompt?.() ?? systemPrompt;
+  const resolveSystemPrompt = (): SystemPromptBlock[] =>
+    options.getSystemPrompt?.() ??
+    systemPrompt ??
+    buildSystemPromptBlocks({ cwd });
 
   const resolvedModel = model ?? getModel();
 

@@ -13,7 +13,10 @@ import {
   appendTranscriptEntry,
 } from "../persistence/transcript.js";
 import type { TranscriptEntry } from "../persistence/types.js";
-import { renderSystemPrompt } from "../context/systemPrompt.js";
+import {
+  buildSystemPromptBlocks,
+  type SystemPromptBlock,
+} from "../context/systemPrompt.js";
 import { loadAllSkills } from "../skills/loader.js";
 import {
   clearActiveSkillRestriction,
@@ -186,8 +189,8 @@ export class QueryEngine {
     this.abortController?.abort();
   }
 
-  private buildSystemPrompt(): string {
-    return renderSystemPrompt({
+  private buildSystemPrompt(): SystemPromptBlock[] {
+    return buildSystemPromptBlocks({
       cwd: this.cwd,
       ignoreMemory: this.ignoreMemory,
       skills: this.skills,
